@@ -63,9 +63,9 @@ hf download Qwen/Qwen2.5-VL-7B-Instruct `
 
 # Piper: modelo + config (ambos necesarios) – voz es_AR/daniela/high
 hf download rhasspy/piper-voices `
-  --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx" `
-  --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx.json" `
+  --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx*" `
   --local-dir "C:\piper\voices\es_AR\daniela_high"
+
 ```
 
 **Rutas esperadas por el gateway:**
