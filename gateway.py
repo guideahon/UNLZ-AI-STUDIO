@@ -1,35 +1,54 @@
+
 import os, sys, time, base64, tempfile, shutil, subprocess, signal
 from pathlib import Path
 from typing import Optional, Dict, Any
 import psutil
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from faster_whisper import WhisperModel
 import uvicorn
+
+# Logs
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
 
 # =========================
 # CONFIG - AJUSTÁ ESTAS RUTAS
 # =========================
 #LLAMA_SERVER_EXE = r"C:\llama-cuda\llama-server.exe"  # Cuda
 LLAMA_SERVER_EXE = "llama-server"  # Vulkan
-LLAMA_MODEL      = r"C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct.Q5_K_M.gguf"
+LLAMA_MODEL = r"C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf"
 LLAMA_HOST       = "127.0.0.1"
 LLAMA_PORT       = 8080
 LLAMA_ARGS = [
     "-m", LLAMA_MODEL,
     "--host", LLAMA_HOST, "--port", str(LLAMA_PORT),
-    "--ctx-size", "8192",
-    "--n-gpu-layers", "35",
+    "--ctx-size", "4096",      # ↓ primero chico para evitar OOM
+    "--n-gpu-layers", "28",    # si tu build no acepta este flag, usar --ngl
     "-t", "12" #,       # si usás Vulkan, quitá esta coma, si usas CUDA, dejala
     #"--flash-attn"     # si usás Vulkan, quitá este flag, si usas CUDA, dejalo
 ]
 
-LMDEPLOY_CMD     = [sys.executable, "-m", "lmdeploy"]
-VLM_MODEL_PATH = r"C:\models\qwen2.5-vl-7b-hf"
-VLM_HOST         = "127.0.0.1"
-VLM_PORT         = 9090
-VLM_ARGS = ["serve", "api_server", "--model-path", VLM_MODEL_PATH, "--server-port", str(VLM_PORT)]
+# --- VLM (LMDeploy 0.9.2): use HF repo id + local cache dir ---
+LMDEPLOY_CMD  = [sys.executable, "-m", "lmdeploy"]
+
+# Serve the official HF repo name, but cache/use weights from your local folder:
+VLM_MODEL_ID  = "Qwen/Qwen2.5-VL-7B-Instruct"
+VLM_CACHE_DIR = r"C:\models\qwen2.5-vl-7b-hf"  # <- this is the folder you already downloaded
+
+VLM_HOST = "127.0.0.1"
+VLM_PORT = 9090
+
+# IMPORTANT: model path is positional; backend pytorch; format hf; point to your local cache
+VLM_ARGS = [
+    "serve", "api_server", VLM_MODEL_ID,
+    "--backend", "pytorch",
+    "--model-format", "hf",
+    "--download-dir", VLM_CACHE_DIR,
+    "--server-port", str(VLM_PORT),
+]
 
 # STT (usar CUDA o CPU)
 USE_CUDA_FOR_STT = False  # True usa GPU; False evita pelear VRAM con LLM
@@ -44,6 +63,7 @@ PIPER_VOICE= r"C:\piper\voices\es_AR\daniela_high\es_AR-daniela-high.onnx"
 # =========================
 # MANAGER DE PROCESOS GPU
 # =========================
+
 class GpuProcessManager:
     def __init__(self):
         self.mode = None  # "llm" | "vlm" | None
@@ -68,42 +88,89 @@ class GpuProcessManager:
     def ensure_mode(self, mode: str):
         assert mode in ("llm", "vlm")
         if self.mode == mode and self.proc and self.proc.poll() is None:
-            return  # ya está
-        # si hay algo distinto, matar
+            return
+
         self.stop()
-        time.sleep(1.5)  # pequeña espera para liberar VRAM
-        # lanzar
+        time.sleep(1.5)
+
         if mode == "llm":
             print("Starting llama-server...")
-            self.proc = subprocess.Popen([LLAMA_SERVER_EXE] + LLAMA_ARGS, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            # esperar a que levante
-            self._wait_http_up(f"http://{LLAMA_HOST}:{LLAMA_PORT}/health", fallback=f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/models")
+            log_path = LOG_DIR / "llama-server.log"
+            logf = open(log_path, "wb")
+            try:
+                self.proc = subprocess.Popen(
+                    [LLAMA_SERVER_EXE] + LLAMA_ARGS,
+                    stdout=logf, stderr=subprocess.STDOUT
+                )
+                # >>> Esperar SOLO salud OK (200)
+                self._wait_llama_ready(timeout=600, proc=self.proc)
+            except Exception as e:
+                try: logf.flush()
+                finally: logf.close()
+                from fastapi import HTTPException
+                raise HTTPException(status_code=503, detail=f"llama-server no inició: {e}. Ver {log_path}")
+            finally:
+                try: logf.flush(); logf.close()
+                except: pass
         else:
             print("Starting lmdeploy api_server...")
-            self.proc = subprocess.Popen(LMDEPLOY_CMD + VLM_ARGS, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0)
-            self._wait_http_up(f"http://{VLM_HOST}:{VLM_PORT}/v1/models")
+            log_path = LOG_DIR / "lmdeploy.log"
+            logf = open(log_path, "wb")
+            try:
+                self.proc = subprocess.Popen(
+                    LMDEPLOY_CMD + VLM_ARGS,
+                    stdout=logf, stderr=subprocess.STDOUT,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name=="nt" else 0
+                )
+                # Para LMDeploy alcanza con que /v1/models responda 200
+                self._wait_http_ok(f"http://{VLM_HOST}:{VLM_PORT}/v1/models", timeout=180, proc=self.proc)
+            except Exception as e:
+                try: logf.flush()
+                finally: logf.close()
+                from fastapi import HTTPException
+                raise HTTPException(status_code=503, detail=f"lmdeploy no inició: {e}. Ver {log_path}")
+            finally:
+                try: logf.flush(); logf.close()
+                except: pass
+
         self.mode = mode
 
-    def _wait_http_up(self, url: str, fallback: Optional[str]=None, timeout=60):
-        deadline = time.time()+timeout
-        with httpx.Client(timeout=2.0) as client:
-            while time.time()<deadline:
+    def _wait_llama_ready(self, timeout=600, proc: Optional[subprocess.Popen]=None):
+        """espera a que /health devuelva 200 (modelo cargado)"""
+        url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/health"
+        deadline = time.time() + timeout
+        with httpx.Client(timeout=3.0) as client:
+            while time.time() < deadline:
+                if proc is not None and proc.poll() is not None:
+                    rc = proc.returncode
+                    raise RuntimeError(f"llama-server terminó con código {rc}")
                 try:
                     r = client.get(url)
-                    if r.status_code<500:
+                    if r.status_code == 200:
                         return
                 except:
                     pass
-                if fallback:
-                    try:
-                        r = client.get(fallback)
-                        if r.status_code<500:
-                            return
-                    except:
-                        pass
-                time.sleep(1)
-        # si no levantó igual seguimos (el backend podría tardar más)
+                time.sleep(1.0)
+        raise RuntimeError(f"/health no estuvo OK en {timeout}s (modelo grande: puede tardar).")
 
+    def _wait_http_ok(self, url: str, timeout=120, proc: Optional[subprocess.Popen]=None):
+        """espera a que un endpoint devuelva 200 (p.ej. /v1/models de LMDeploy)"""
+        deadline = time.time() + timeout
+        with httpx.Client(timeout=3.0) as client:
+            while time.time() < deadline:
+                if proc is not None and proc.poll() is not None:
+                    rc = proc.returncode
+                    raise RuntimeError(f"proceso terminó con código {rc}")
+                try:
+                    r = client.get(url)
+                    if r.status_code == 200:
+                        return
+                except:
+                    pass
+                time.sleep(1.0)
+        raise RuntimeError(f"{url} no respondió 200 en {timeout}s.")
+
+    
 manager = GpuProcessManager()
 app = FastAPI(title="IA Gateway (LLM/VLM/ALM)")
 

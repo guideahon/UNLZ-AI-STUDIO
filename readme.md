@@ -30,26 +30,7 @@ Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobb
 
 > **PowerShell:** el continuador de línea es el **backtick** `` ` `` y debe ir como **último carácter** (sin espacios después).
 
-### 1) Dependencias
-
-```powershell
-# llama.cpp (Vulkan por winget; si luego querés CUDA, bajá el zip cublas desde Releases)
-winget install llama.cpp
-
-# Backend y gateway
-pip install -U fastapi uvicorn httpx psutil python-multipart faster-whisper
-
-# VLM (LMDeploy)
-pip install -U lmdeploy
-
-# Hugging Face (incluye el comando 'hf')
-pip install -U huggingface_hub
-
-# TTS (instala el binario 'piper' en tu PATH de Python)
-pip install -U piper-tts
-```
-
-### 2) Modelos
+### 1) Modelos
 
 ```powershell
 # LLM (GGUF) – Qwen3-Coder-30B-A3B-Instruct (Q5_K_M)
@@ -66,6 +47,29 @@ hf download rhasspy/piper-voices `
   --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx*" `
   --local-dir "C:\piper\voices\es_AR\daniela_high"
 
+```
+
+### 2) Dependencias
+
+```powershell
+# llama.cpp (Vulkan por winget; si luego querés CUDA, bajá el zip cublas desde Releases)
+winget install llama.cpp
+
+# Backend y gateway
+pip install -U fastapi uvicorn httpx psutil python-multipart faster-whisper
+
+# VLM (LMDeploy)
+pip install -U lmdeploy
+
+# Hugging Face (incluye el comando 'hf')
+pip install -U huggingface_hub
+
+# TTS (instala el binario 'piper' en tu PATH de Python)
+pip install -U piper-tts
+
+#TurboMind offline mode
+lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
+  --dst-path "C:\models\qwen2.5-vl-7b-tm"
 ```
 
 **Rutas esperadas por el gateway:**
@@ -95,40 +99,100 @@ uvicorn gateway:app --host 0.0.0.0 --port 8000
 
 ### LLM (texto)
 ```powershell
+# 1) Health (opcional)
+Invoke-RestMethod "http://localhost:8000/health"
+
+# 2) Body JSON
 $body = @{
   model = "qwen3-coder-30b"
   messages = @(
     @{ role="system"; content="You are a helpful coding assistant." },
     @{ role="user";   content="Explicá PID con pseudocódigo." }
   )
-} | ConvertTo-Json -Depth 3
+} | ConvertTo-Json -Depth 5
 
-Invoke-RestMethod -Uri "http://localhost:8000/llm" -Method Post -ContentType "application/json" -Body $body
+# 3) Enviar (UTF-8) y ver la respuesta completa (raw JSON)
+$raw = Invoke-WebRequest -Uri "http://localhost:8000/llm" `
+  -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
+| Select-Object -ExpandProperty Content
+$raw
+
+# 4) (Opcional) Extraer solo el texto, sea string o array de partes
+$resp = $raw | ConvertFrom-Json
+$msg  = $resp.choices[0].message
+if ($msg.content -is [array]) {
+  ($msg.content | ForEach-Object { $_.text }) -join "`n"
+} else {
+  $msg.content
+}
+
+
 ```
 
 ### VLM (visión, estilo OpenAI)
 ```powershell
+# IMPORTANTE: la imagen debe ser accesible por el servidor (URL pública)
+$imageUrl = "https://upload.wikimedia.org/wikipedia/commons/3/3a/PCB_SMD.jpg"
+
 $body = @{
   model = "qwen2.5-vl-7b"
   messages = @(
-    @{ role="user"; content=@(
-      @{ type="text"; text="¿Qué dice esta placa y qué falla ves?" },
-      @{ type="image_url"; image_url=@{ url="https://TU_SERVIDOR/imagen.jpg" } }
-    )}
+    @{
+      role    = "user"
+      content = @(
+        @{ type = "text";      text = "¿Qué dice esta placa y qué falla ves?" },
+        @{ type = "image_url"; image_url = @{ url = $imageUrl } }
+      )
+    }
   )
-} | ConvertTo-Json -Depth 6
+} | ConvertTo-Json -Depth 8
 
-Invoke-RestMethod -Uri "http://localhost:8000/vlm" -Method Post -ContentType "application/json" -Body $body
+# Enviar (UTF-8) y ver raw JSON
+$raw = Invoke-WebRequest -Uri "http://localhost:8000/vlm" `
+  -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
+| Select-Object -ExpandProperty Content
+$raw
+
+# Extraer texto (string o array de partes)
+$resp = $raw | ConvertFrom-Json
+$msg  = $resp.choices[0].message
+if ($msg.content -is [array]) {
+  ($msg.content | ForEach-Object { $_.text }) -join "`n"
+} else {
+  $msg.content
+}
+
 ```
 
 ### ALM (audio completo)
 ```powershell
-Invoke-RestMethod -Uri "http://localhost:8000/alm" -Method Post -Form @{
-  file = Get-Item "C:\audios\pregunta.wav"
+# Enviar WAV/MP3/M4A, etc. como multipart/form-data
+$resp = Invoke-RestMethod -Uri "http://localhost:8000/alm" -Method Post -Form @{
+  file         = Get-Item "C:\audios\pregunta.wav"
   system_prompt = "Sos un asistente de mecatrónica que responde de forma clara."
-  tts = "true"
-  target_lang = "es"
+  tts          = "true"
+  target_lang  = "es"
 }
+
+# Ver STT y respuesta de LLM
+$resp.stt_text
+$resp.llm_text
+
+# Guardar el WAV devuelto (es data:audio/wav;base64,XXXXX)
+if ($resp.tts_audio) {
+  $b64 = ($resp.tts_audio -split ",",2)[-1]
+  $bytes = [Convert]::FromBase64String($b64)
+  $out = "C:\audios\respuesta.wav"
+  [IO.File]::WriteAllBytes($out, $bytes)
+  "Audio guardado en: $out"
+} else {
+  "No vino audio (tts_audio = null)."
+}
+
 ```
 
 ---
