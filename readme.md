@@ -1,8 +1,8 @@
 ![Logo Institucional](https://github.com/JonatanBogadoUNLZ/PPS-Jonatan-Bogado/blob/9952aac097aca83a1aadfc26679fc7ec57369d82/LOGO%20AZUL%20HORIZONTAL%20-%20fondo%20transparente.png)
 # Universidad Nacional de Lomas de Zamora - Facultad de Ingeniería  
-## Repositorio de proyectos de PPS y Proyecto Final de Mecatrónica
+## UNLZ-AI-STUDIO 
 
-Este repositorio centraliza **forks** de los proyectos desarrollados en el marco de:
+Guía práctica de self hosting de LLMs por API para universidades y hobbistas
 
 - **PPS** – Práctica Profesional Supervisada  
 - **Proyecto Final de Ingeniería en Mecatrónica**
