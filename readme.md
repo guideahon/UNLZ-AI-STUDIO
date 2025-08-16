@@ -5,11 +5,6 @@
 
 Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobbistas.
 
-- **PPS** – Práctica Profesional Supervisada  
-- **Proyecto Final de Ingeniería en Mecatrónica**
-
-Todos los proyectos fueron realizados por estudiantes de la **Universidad Nacional de Lomas de Zamora (UNLZ)**, **Facultad de Ingeniería**, como parte de sus actividades académicas finales.
-
 ---
 
 ## 🚀 ¿Qué expone este proyecto?
