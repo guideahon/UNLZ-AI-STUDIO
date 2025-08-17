@@ -188,7 +188,7 @@ if ($msg.content -is [array]) {
 ### VLM (visión, estilo OpenAI)
 ```powershell
 # Valid thumbnail URL
-$imageUrl = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/PCB_SMD.jpg/1024px-PCB_SMD.jpg"
+$imageUrl = "https://live.staticflickr.com/65535/54703830763_71e4af50f4_k.jpg"
 
 $body = @{
   model = "qwen2.5-vl-7b"
