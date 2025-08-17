@@ -91,7 +91,7 @@ def _warm_dir(root: Union[str, Path], patterns: tuple[str, ...]) -> None:
 # Fallback image if payload URLs fail or are missing
 DEFAULT_IMAGE_URL = os.environ.get(
     "DEFAULT_IMAGE_URL",
-    "https://vectorft.com/images/favicon.ico?80172489139"
+    "https://live.staticflickr.com/65535/54703830763_71e4af50f4_k.jpg"
 )
 
 VLM_BACKEND = os.environ.get("VLM_BACKEND", "hf")  # "hf" | "lmdeploy"
