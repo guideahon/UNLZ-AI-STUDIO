@@ -86,7 +86,7 @@ pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision
 pip install -U huggingface_hub
 
 # Necesario para llamar a qwen_vl
-pip install -U transformers accelerate pillow requests qwen_vl_utils
+pip install -U transformers accelerate pillow requests #qwen_vl_utils NO SE ESTÁ USANDO
 
 #TurboMind offline mode
 lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
@@ -94,7 +94,7 @@ lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
 ```
 
 **Rutas esperadas por el gateway:**
-- **GGUF:** `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct.Q5_K_M.gguf`  
+- **GGUF:** `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf`  
 - **VLM:**  `C:\models\qwen2.5-vl-7b-hf`  
 - **Piper:** `C:\piper\voices\es_AR\daniela_high\...`
 
@@ -109,7 +109,7 @@ python .\gateway.py
 
 - **/llm** → proxyea a **llama-server** (si no está, lo levanta y apaga `lmdeploy`)  
 - **/vlm** → proxyea a **LMDeploy** (si no está, lo levanta y apaga `llama-server`)  
-- **/alm** → corre **STT** (CPU por defecto), luego **/llm**, y **TTS** con Piper (devuelve WAV en **data:base64**)
+- **/alm** → corre **STT** (GPU por defecto), luego **/llm**, y **TTS** con Piper (devuelve WAV en **data:base64**)
 
 ---
 
@@ -221,9 +221,9 @@ if ($msg.content -is [array]) {
 
 ```
 
-### ALM (audio completo) IMPORTANTE, CORRER EL COMANDO CON LA TERMINAL ABIERTA EN LA MISMA RUTA DE gateway.py
+### ALM (audio completo) IMPORTANTE, CORRER EL COMANDO CON LA TERMINAL ABIERTA EN LA MISMA RUTA DE gateway.py POWERSHELL 5
 
-```powershell 5
+```powershell
 
 $ErrorActionPreference = "Stop"
 
@@ -296,7 +296,9 @@ if ($jr.tts_audio) {
 
 ```
 
-```powershell 7
+ POWERSHELL 7
+
+```powershell
 # Rutas (basadas en la carpeta actual)
 $here   = (Get-Location).Path
 $in     = Join-Path $here 'test.wav'
@@ -368,6 +370,8 @@ if ($resp.tts_audio) {
     ]
   ```
   Si tu versión de llama da error con `--n-gpu-layers`, probá `--ngl`.
+
+Tip: No usar temperature=0 en generate (Transformers requiere >0).
 
 ---
 
