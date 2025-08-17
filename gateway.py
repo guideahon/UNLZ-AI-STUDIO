@@ -1,3 +1,6 @@
+
+PRINT_CHILD_LOGS = False  # Avoid accidental spam from child processes
+
 import warnings
 #warnings.filterwarnings("ignore", category=UserWarning, module=r"ctranslate2(\.|$)")
 import os, sys, time, base64, tempfile, shutil, subprocess, threading
@@ -57,7 +60,7 @@ from urllib.parse import urlparse
 
 # --- Warm helpers: leer archivos a RAM (page-cache) sin guardarlos en Python ---
 from typing import Union
-def _warm_file(path: Union[str, Path], chunk_mb: int = 64) -> None:
+def _warm_file(path: Union[str, Path], chunk_mb: int = 256) -> None:
     p = Path(path)
     if not p.is_file():
         print(f"[warm] skip (no file): {p}")
@@ -158,7 +161,8 @@ def _download_image(url: str) -> Image.Image:
         "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
         "Referer": "https://www.wikipedia.org/",
     }
-    r = requests.get(url, headers=headers, timeout=30, stream=True)
+    # Lower connect/read timeouts and avoid streaming to memory twice
+    r = requests.get(url, headers=headers, timeout=(3.0, 10.0))
     try:
         r.raise_for_status()
     except requests.HTTPError as e:
@@ -171,7 +175,9 @@ def _download_image(url: str) -> Image.Image:
     return Image.open(BytesIO(r.content)).convert("RGB")
 
 
+
 import torch
+torch.set_grad_enabled(False)  # Always disable grad globally (eval only)
 
 def _hf_vlm_infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     bundle = _ensure_hf_vlm()
@@ -304,9 +310,7 @@ def _hf_vlm_infer(payload: Dict[str, Any]) -> Dict[str, Any]:
             try: im.close()
             except: pass
         del inputs, output_ids
-        gc.collect()
-        if bundle["device"] == "cuda":
-            torch.cuda.empty_cache()
+        # Removed gc.collect() and torch.cuda.empty_cache() to keep memory warm for speed
     except Exception:
         pass
 
@@ -355,85 +359,133 @@ def _spawn_with_tee(cmd, log_path: Path, env=None, creationflags=0):
     return proc
 
 
-# === TTS - Piper ===
+
+
+
+# --- TTS: rutas Piper (defínelas antes de PiperWorker) ---
 PIPER_EXE   = r"C:\piper\piper\piper.exe"
 PIPER_VOICE = r"C:\piper\voices\es_AR\daniela_high\es\es_AR\daniela\high\es_AR-daniela-high.onnx"
+PIPER_CFG   = PIPER_VOICE + ".json"  # si existe, lo usamos en PiperWorker.start()
 
-# carpeta temporal aislada para Piper
-TTS_TMP_DIR = LOG_DIR / "piper_tmp"
-TTS_TMP_DIR.mkdir(parents=True, exist_ok=True)
+# === Piper (worker CLI persistente, sin HTTP) ===
+import json
 
-def _effective_piper_voice() -> str:
-    v = os.environ.get("PIPER_VOICE", PIPER_VOICE)
-    if os.path.isdir(v):
-        import glob, os as _os
-        cand = sorted(glob.glob(_os.path.join(v, "*.onnx")))
-        if not cand:
-            raise RuntimeError(f"No se encontraron .onnx en el directorio: {v}")
-        v = cand[0]
-    if not os.path.isfile(v):
-        raise RuntimeError(f"PIPER_VOICE no existe: {v}")
+_piper_start_lock = threading.RLock()   # <- lock global para el arranque
 
-    # Aviso si falta el JSON al lado (muchas voces lo necesitan)
-    sidecar_json = v + ".json" if not v.endswith(".json") else v
-    if not os.path.isfile(sidecar_json):
-        print(f"[TTS] AVISO: No se encontró el sidecar JSON junto al modelo: {sidecar_json}")
+class PiperWorker:
+    def __init__(self, exe: str, voice: str, out_dir: Path, cfg: Optional[str] = None):
+        self.exe = exe
+        self.voice = voice
+        self.cfg = cfg if (cfg and os.path.isfile(cfg)) else None
+        self.out_dir = out_dir
+        self.proc: Optional[subprocess.Popen] = None
+        self.lock = threading.RLock()
+        self._log_f = None  # para volcar stderr a archivo (evita bloqueo)
 
-    return v
+    def start(self):
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [self.exe, "-m", self.voice, "--json-input", "--output_dir", str(self.out_dir)]
+        if self.cfg:
+            cmd += ["-c", self.cfg]
 
-def _synth_with_piper(text: str) -> bytes:
-    """
-    Ejecuta Piper (pip wrapper) escribiendo a un WAV temporal en disco
-    y devuelve los bytes del WAV. Evita el modo stdout (-f -) que
-    en Windows da error.
-    """
-    import tempfile, os
-    voice = _effective_piper_voice()
-    with tempfile.NamedTemporaryFile(dir=TTS_TMP_DIR, suffix=".wav", delete=False) as tmp:
-        tmp_wav_path = tmp.name
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-    env = os.environ.copy()
-    env["TMP"] = env["TEMP"] = env["TMPDIR"] = str(TTS_TMP_DIR)
+        # Abrí un log para stderr (no uses PIPE sin leerlo)
+        piper_log = LOG_DIR / "piper-cli.log"
+        self._log_f = open(piper_log, "a", encoding="utf-8", buffering=1)
 
-    # IMPORTANTE: usar -f <ruta>, no -f -
-    cmd = [PIPER_EXE, "-m", voice, "-f", tmp_wav_path]
-
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    try:
-        proc = subprocess.Popen(
+        # Usá stdin binario (text=False) y escribí UTF-8 manualmente
+        # bufsize=0 => sin buffer adicional
+        self.proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,   # no usamos stdout
-            stderr=subprocess.PIPE,
-            env=env,
-            creationflags=flags
+            stdout=subprocess.DEVNULL,
+            stderr=self._log_f,
+            text=False,
+            bufsize=0,
+            creationflags=flags,
         )
-    except FileNotFoundError as e:
-        raise RuntimeError(f"No se pudo ejecutar Piper ('{PIPER_EXE}'). ¿Está en PATH?") from e
+        if not self.proc or self.proc.poll() is not None:
+            raise RuntimeError("No se pudo iniciar Piper (CLI).")
 
-    _, err = proc.communicate(text.encode("utf-8"))
-    rc = proc.returncode
-    err_txt = (err or b"").decode("utf-8", "ignore")
+        # Warmup rápido (si falla, no corta el arranque)
+        try:
+            self.synth("ok", timeout=10.0)
+        except Exception:
+            pass
 
-    if rc != 0:
-        # limpia el temporal si falló
-        try: os.unlink(tmp_wav_path)
-        except: pass
-        raise RuntimeError(f"Piper salió con código {rc}. STDERR: {err_txt[:800]}")
+    def stop(self):
+        try:
+            if self.proc and self.proc.poll() is None:
+                self.proc.terminate()
+        except Exception:
+            pass
+        self.proc = None
+        try:
+            if self._log_f:
+                self._log_f.close()
+        except Exception:
+            pass
+        self._log_f = None
 
-    # leer WAV generado
-    try:
-        with open(tmp_wav_path, "rb") as f:
-            out = f.read()
-    finally:
-        try: os.unlink(tmp_wav_path)
-        except: pass
+    def synth(self, text: str, timeout: float = 30.0) -> bytes:
+        if not self.proc or self.proc.poll() is not None:
+            raise RuntimeError("Piper no está iniciado (worker).")
 
-    # validación mínima WAV
-    if not out or len(out) < 44 or out[:4] != b"RIFF" or out[8:12] != b"WAVE":
-        raise RuntimeError(f"Piper no produjo WAV válido (bytes={len(out)}). STDERR: {err_txt[:800]}")
+        # Usá ruta ABSOLUTA (y slashes) para evitar líos con --output_dir
+        fname = f"p_{int(time.time()*1000)}_{os.getpid()}_{threading.get_ident()}.wav"
+        out_path = (self.out_dir / fname).resolve()
+        out_path_str = str(out_path).replace("\\", "/")
 
-    return out
+        payload = {"text": text, "output_file": out_path_str}
+        line = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+
+        with self.lock:
+            try:
+                self.proc.stdin.write(line)  # bytes
+                self.proc.stdin.flush()
+            except BrokenPipeError:
+                raise RuntimeError("stdin de Piper se cerró (proceso muerto).")
+
+        # Esperá el archivo
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if out_path.exists() and out_path.stat().st_size > 44:  # WAV mínimo
+                try:
+                    data = out_path.read_bytes()
+                finally:
+                    try: out_path.unlink()
+                    except: pass
+                return data
+
+            # Si el proceso murió, devolvé el tail del log
+            if self.proc.poll() is not None:
+                try:
+                    tail = (LOG_DIR / "piper-cli.log").read_text("utf-8", errors="ignore").splitlines()[-50:]
+                except Exception:
+                    tail = ["<sin log>"]
+                raise RuntimeError("Piper murió durante la síntesis:\n" + "\n".join(tail))
+
+            time.sleep(0.02)
+
+        # Timeout: mostrale algo útil al caller
+        try:
+            tail = (LOG_DIR / "piper-cli.log").read_text("utf-8", errors="ignore").splitlines()[-50:]
+        except Exception:
+            tail = ["<sin log>"]
+        raise RuntimeError("Timeout esperando el WAV de Piper.\n" + "\n".join(tail))
+
+# instanciación (AHORA sí existen las constantes)
+piper_worker = PiperWorker(PIPER_EXE, PIPER_VOICE, TTS_TMP_DIR, cfg=PIPER_CFG)
+
+def ensure_piper_worker():
+    with _piper_start_lock:
+        if not piper_worker.proc or piper_worker.proc.poll() is not None:
+            piper_worker.start()
+
+def _synth_with_piper(text: str) -> bytes:
+    ensure_piper_worker()
+    return piper_worker.synth(text)
 
 
 
@@ -452,7 +504,7 @@ LLAMA_ARGS = [
     "--ctx-size", "4096",
     "--n-gpu-layers", "28",    # si tu build no acepta este flag, usar --ngl
     "-t", "12",
-    #"--no-mmap",           # fuerza copia completa a RAM (en vez de mmapped desde disco)
+    "--no-mmap",           # fuerza copia completa a RAM (en vez de mmapped desde disco)
     # "--mlock",           # (opcional) intenta “fijar” en RAM; en Windows puede requerir privilegios
     # "--flash-attn"          # si usás CUDA/cuBLAS (no Vulkan)
 ]
@@ -490,10 +542,13 @@ try:
     # LLM (GGUF)
     _warm_file(LLAMA_MODEL)
 
-    # VLM (HF cache carpeta)
+    # VLM (HF cache carpeta) — only warm snapshot shards, not all paths
     if 'VLM_CACHE_DIR' in globals() and os.path.isdir(VLM_CACHE_DIR):
         _warm_dir(VLM_CACHE_DIR, patterns=(
-            "*.safetensors", "tokenizer.json", "tokenizer.model", "merges.txt", "vocab.json", "*.json"
+            "snapshots/*/*.safetensors",
+            "snapshots/*/tokenizer.json",
+            "snapshots/*/preprocessor_config.json",
+            "snapshots/*/config.json",
         ))
     else:
         print("[warm] skip VLM: VLM_CACHE_DIR no definido o carpeta inexistente")
@@ -509,10 +564,12 @@ except Exception as e:
 
 
 # STT (usar CUDA o CPU)
-USE_CUDA_FOR_STT = False
+
+# Use CUDA for STT if VRAM is available for faster inference
+USE_CUDA_FOR_STT = True
 STT_MODEL_SIZE   = "medium"
-STT_DEVICE       = "cuda" if USE_CUDA_FOR_STT else "cpu"
-STT_COMPUTE_TYPE = "float16" if USE_CUDA_FOR_STT else "int8"
+STT_DEVICE       = "cuda"
+STT_COMPUTE_TYPE = "float16"
 
 
 
@@ -520,10 +577,99 @@ STT_COMPUTE_TYPE = "float16" if USE_CUDA_FOR_STT else "int8"
 # MANAGER DE PROCESOS GPU
 # =========================
 
+import socket, json, time, requests
+
+def _wait_port_open(host: str, port: int, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            try:
+                s.connect((host, port))
+                return True
+            except Exception:
+                time.sleep(0.25)
+    return False
 
 import threading
 
 class GpuProcessManager:
+    def ensure_piper(self, deadline_sec: int = 180):
+        """Levanta Piper HTTP server y espera que quede listo."""
+        with self._lock:
+            # Si ya corre, salir
+            if hasattr(self, "piper_proc") and self.piper_proc and self.piper_proc.poll() is None:
+                return
+
+            # Matar restos
+            if hasattr(self, "piper_proc") and self.piper_proc:
+                try: self.piper_proc.terminate()
+                except: pass
+
+            log_path = LOG_DIR / "piper-server.log"
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+            # Algunas instalaciones tienen 'piper_server.exe' aparte:
+            exe = PIPER_EXE
+            if os.path.isfile(os.path.join(os.path.dirname(PIPER_EXE), "piper_server.exe")):
+                exe = os.path.join(os.path.dirname(PIPER_EXE), "piper_server.exe")
+
+            cmd = [exe, "--server", f"--host=127.0.0.1", f"--port={PIPER_PORT}", "-m", PIPER_VOICE]
+            self.piper_proc = _spawn_with_tee(cmd, log_path, creationflags=flags)
+
+            host = "127.0.0.1"; port = PIPER_PORT
+
+            # 1) Esperar a que el puerto esté escuchando
+            if not _wait_port_open(host, port, timeout=min(30, deadline_sec)):
+                # Extra: si el proceso murió, mostrar log
+                if self.piper_proc.poll() is not None:
+                    try:
+                        tail = (log_path.read_text(encoding="utf-8", errors="ignore")).splitlines()[-50:]
+                    except Exception:
+                        tail = ["<no log>"]
+                    raise RuntimeError("Piper server process exited temprano.\n" + "\n".join(tail))
+                raise RuntimeError("Piper no abrió el puerto a tiempo.")
+
+            # 2) Health check barato (no TTS)
+            base = f"http://{host}:{port}"
+            ok = False
+            deadline = time.time() + deadline_sec
+            s = requests.Session()
+            while time.time() < deadline:
+                if self.piper_proc.poll() is not None:
+                    try:
+                        tail = (log_path.read_text(encoding="utf-8", errors="ignore")).splitlines()[-50:]
+                    except Exception:
+                        tail = ["<no log>"]
+                    raise RuntimeError("Piper server process exited temprano.\n" + "\n".join(tail))
+                try:
+                    r = s.get(base + "/", timeout=2)  # muchas builds devuelven 200 en /
+                    if r.status_code < 500:
+                        ok = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+            if not ok:
+                try:
+                    tail = (log_path.read_text(encoding="utf-8", errors="ignore")).splitlines()[-50:]
+                except Exception:
+                    tail = ["<no log>"]
+                raise RuntimeError("Piper server no respondió al health check.\n" + "\n".join(tail))
+
+            # 3) Warmup muy corto (opcional, fuera del health)
+            try:
+                r = s.post(base + "/api/tts",
+                           data=json.dumps({"text": "hola"}),
+                           headers={"Content-Type": "application/json"},
+                           timeout=(3, 30))
+                _ = r.content  # forzar lectura
+            except Exception as e:
+                # No abortar el arranque por warmup; solo loguear
+                print("[piper] warmup falló suavemente:", e)
+
+
     def __init__(self):
         self.mode = None
         self.proc: Optional[subprocess.Popen] = None
@@ -661,7 +807,12 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _httpx_async_client
-    _httpx_async_client = httpx.AsyncClient(timeout=None)
+    limits = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60)
+    _httpx_async_client = httpx.AsyncClient(
+        timeout=httpx.Timeout(None),
+        limits=limits,
+        http2=False  # uvicorn doesn’t speak h2 by default; avoid negotiation overhead
+    )
 
 
     # ⇩⇩ PRELOAD LLM ANTES DEL PRIMER REQUEST ⇩⇩
@@ -685,10 +836,30 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print("[startup] warm-up LLM fallo suave:", e)
 
+    # Start Piper CLI worker at startup
+    if os.environ.get("PRELOAD_PIPER", "1") == "1":
+        print("[startup] Preloading Piper (CLI worker) …")
+        await asyncio.to_thread(ensure_piper_worker)
+
+
+
     # (Opcional) si querés precargar también el VLM HF (ojo VRAM)
     if os.environ.get("PRELOAD_VLM", "1") == "1":
         print("[startup] Preloading Qwen2.5-VL-7B-Instruct …")
         await asyncio.to_thread(_ensure_hf_vlm)
+        def _warmup_vlm():
+            import torch
+            from PIL import Image
+            b = _ensure_hf_vlm()
+            model, processor = b["model"], b["processor"]
+            img = Image.new("RGB", (8, 8), (0, 0, 0))  # avoid ambiguous [3,1,1] warning
+            inputs = processor(text=["Describe."], images=[img], return_tensors="pt").to(model.device)
+            with torch.inference_mode():
+                _ = model.generate(**inputs, max_new_tokens=1)  # no temperature=0
+        try:
+            await asyncio.to_thread(_warmup_vlm)
+        except Exception as e:
+            print("[startup] VLM warm-up skipped:", e)
 
     yield
     await _httpx_async_client.aclose()
@@ -741,13 +912,39 @@ from fastapi.concurrency import run_in_threadpool
 
 @app.post("/llm")
 async def llm_chat(payload: LLMChatPayload, client: httpx.AsyncClient = Depends(get_httpx_client)):
+    from fastapi.responses import StreamingResponse
     try:
         await run_in_threadpool(manager.ensure_mode, "llm")
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
-    r = await client.post(url, json=payload.model_dump())
-    return JSONResponse(status_code=r.status_code, content=r.json())
+
+    # Check for OpenAI-style streaming
+    stream = False
+    if hasattr(payload, 'stream') and getattr(payload, 'stream', False):
+        stream = True
+    elif isinstance(payload, dict) and payload.get('stream'):
+        stream = True
+    # Accept ?stream=true from query params as well
+    import inspect
+    frame = inspect.currentframe()
+    if frame and 'request' in frame.f_back.f_locals:
+        req = frame.f_back.f_locals['request']
+        if req and req.query_params.get('stream') == 'true':
+            stream = True
+
+    if stream:
+        # Proxy chunked response from llama-server
+        def iter_llama():
+            with httpx.stream("POST", url, json=payload.model_dump(), timeout=None) as r:
+                r.raise_for_status()
+                for chunk in r.iter_bytes():
+                    if chunk:
+                        yield chunk
+        return StreamingResponse(iter_llama(), media_type="text/event-stream")
+    else:
+        r = await client.post(url, json=payload.model_dump())
+        return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
 # =========================
 # /clm -> igual a /llm pero usando Qwen/Qwen2.5-VL-7B-Instruct (HF in-proc)
@@ -770,7 +967,8 @@ async def clm_chat(payload: LLMChatPayload):
     }
     try:
         resp = await run_in_threadpool(_hf_vlm_infer, hf_payload)
-        return JSONResponse(status_code=200, content=resp)
+        import json
+        return Response(content=json.dumps(resp), status_code=200, media_type="application/json")
     except Exception as e:
         print("[CLM/HF] Exception:\n" + traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"CLM error: {e}")
@@ -803,7 +1001,8 @@ async def vlm_chat(payload: VLMChatPayload, client: httpx.AsyncClient = Depends(
     if VLM_BACKEND == "hf":
         try:
             resp = await run_in_threadpool(_hf_vlm_infer, payload.model_dump())
-            return JSONResponse(status_code=200, content=resp)
+            import json
+            return Response(content=json.dumps(resp), status_code=200, media_type="application/json")
         except Exception as e:
             print("[HF VLM] Exception:\n" + traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"HF VLM error: {e}")
@@ -814,7 +1013,7 @@ async def vlm_chat(payload: VLMChatPayload, client: httpx.AsyncClient = Depends(
             raise HTTPException(status_code=503, detail=str(e))
         url = f"http://{VLM_HOST}:{VLM_PORT}/v1/chat/completions"
         r = await client.post(url, json=payload.model_dump())
-        return JSONResponse(status_code=r.status_code, content=r.json())
+        return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
 # =========================
 # /alm -> audio pipeline (STT -> LLM -> opcional TTS)
@@ -834,12 +1033,20 @@ async def alm_pipeline(
     target_lang: Optional[str] = Form("es"),
     client: httpx.AsyncClient = Depends(get_httpx_client)
 ):
+
     def transcribe_and_llm():
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename or "audio").suffix or ".wav") as tmp:
             shutil.copyfileobj(file.file, tmp)
             wav_path = tmp.name
 
-        segments, info = stt_model.transcribe(wav_path, language=target_lang, vad_filter=True)
+        # Force greedy decoding for speed (beam_size=1)
+        segments, info = stt_model.transcribe(
+            wav_path,
+            language=target_lang,
+            vad_filter=True,
+            beam_size=1,           # fastest
+            without_timestamps=True
+        )
         user_text = "".join([s.text for s in segments]).strip()
         os.unlink(wav_path)
         return user_text
@@ -889,7 +1096,15 @@ def health():
 
 if __name__ == "__main__":
     try:
-        uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            reload=False,
+            log_level="info",  # less logging = less overhead
+            backlog=2048,         # smoother under bursts
+            # workers=1           # windows: keep 1 process; multiple workers add load without GPU sharing
+        )
     finally:
         print("[main] finally -> stopping children …")
         manager.stop()
