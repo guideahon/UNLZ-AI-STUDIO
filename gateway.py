@@ -6,8 +6,16 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import psutil
 import httpx
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi import Body
+from fastapi import Depends
+from fastapi import status
+from fastapi import Response
+from fastapi import BackgroundTasks
+from fastapi import APIRouter
+from fastapi import FastAPI
+from pydantic import BaseModel, Field, ValidationError
 from faster_whisper import WhisperModel
 import uvicorn
 
@@ -180,50 +188,127 @@ def _download_image(url: str) -> Image.Image:
     return Image.open(BytesIO(r.content)).convert("RGB")
 
 
+import torch
+
 def _hf_vlm_infer(payload: Dict[str, Any]) -> Dict[str, Any]:
     bundle = _ensure_hf_vlm()
     model, processor, device = bundle["model"], bundle["processor"], bundle["device"]
 
-    messages = payload.get("messages", [])
+
+    raw_messages = payload.get("messages", [])
+
+    # 1) Coleccionar URLs (OpenAI style)
+    url_list = []
+    for m in raw_messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            for p in c:
+                if p.get("type") == "image_url":
+                    u = p.get("image_url", {}).get("url")
+                    if u:
+                        url_list.append(u)
+
+    # 2) Descargar imágenes con éxito
     images = []
-    download_errors = []
+    success_urls = []
+    for u in url_list:
+        try:
+            images.append(_download_image(u))
+            success_urls.append(u)
+        except Exception as e:
+            print(f"[HF VLM] image download failed: {u} :: {e}")
 
-    # Try to download any images provided in the payload
-    for msg in messages:
-        if isinstance(msg.get("content"), list):
-            for part in msg["content"]:
-                if part.get("type") == "image_url":
-                    url = part.get("image_url", {}).get("url")
-                    if not url:
-                        continue
-                    try:
-                        images.append(_download_image(url))
-                    except Exception as e:
-                        download_errors.append((url, str(e)))
-
-    # If none worked, fall back to the default image you requested
-    if not images and DEFAULT_IMAGE_URL:
+    # 3) Fallback si el usuario pidió imágenes y ninguna funcionó
+    used_fallback = False
+    if url_list and not images and DEFAULT_IMAGE_URL:
         try:
             images.append(_download_image(DEFAULT_IMAGE_URL))
-            print(f"[HF VLM] No usable image from payload; fell back to {DEFAULT_IMAGE_URL}")
+            used_fallback = True
+            print(f"[HF VLM] usando fallback de imagen: {DEFAULT_IMAGE_URL}")
         except Exception as e:
-            # Surface a helpful message
-            first_err = download_errors[0][1] if download_errors else str(e)
-            raise RuntimeError(f"No images could be loaded. Example error: {first_err}") from e
+            print(f"[HF VLM] fallback de imagen falló: {e}")
 
+    # 4) Construir mensajes alineados: solo crear placeholders por las imágenes disponibles
+    images_needed = len(images)
+    images_used = 0
+    messages_aligned: list[dict] = []
+
+    for m in raw_messages:
+        new_m = {"role": m["role"]}
+        c = m.get("content")
+        if isinstance(c, list):
+            new_c = []
+            for p in c:
+                if p.get("type") == "image_url":
+                    # Ponemos placeholder solo si todavía hay una imagen disponible
+                    if images_used < images_needed:
+                        new_c.append({"type": "image"})
+                        images_used += 1
+                    else:
+                        # No hay imagen para esta parte -> la omitimos
+                        continue
+                else:
+                    # Mantener partes de texto u otras tal cual
+                    new_c.append(p)
+            new_m["content"] = new_c
+        else:
+            # Contenido plano (string): lo dejamos como está
+            new_m["content"] = c
+        messages_aligned.append(new_m)
+
+
+    # --- Render chat template ---
     chat_text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages_aligned, tokenize=False, add_generation_prompt=True
     )
-    inputs = processor(text=[chat_text], images=images, return_tensors="pt").to(model.device)
 
-    import torch
+    # --- Alinear EXACTO: tantos <image> como imágenes reales, sin duplicar ---
+    placeholder_token = getattr(processor, "image_token", "<image>")
+    num_ph = chat_text.count(placeholder_token)
+    num_imgs = len(images)
+
+    def _cap_placeholders(s: str, token: str, keep: int) -> str:
+        out, i, start = [], 0, 0
+        while True:
+            j = s.find(token, start)
+            if j == -1:
+                out.append(s[start:])
+                break
+            out.append(s[start:j])
+            if i < keep:
+                out.append(token)   # conservar solo los primeros `keep`
+            # si no, se descarta el token extra
+            i += 1
+            start = j + len(token)
+        return "".join(out)
+
+    if num_imgs == 0 and num_ph > 0:
+        # no tenemos imágenes: elimina todos los <image>
+        chat_text = chat_text.replace(placeholder_token, "")
+    elif num_ph > num_imgs:
+        # hay más <image> en el prompt que imágenes reales -> recorta placeholders
+        chat_text = _cap_placeholders(chat_text, placeholder_token, num_imgs)
+    elif num_imgs > num_ph:
+        # hay más imágenes que <image> en el prompt -> recorta imágenes
+        images = images[:num_ph]
+
+    print(f"[HF VLM] placeholders(final)={chat_text.count(placeholder_token)}, images(final)={len(images)}")
+
+    # Tokenizar
+    if images:
+        inputs = processor(text=[chat_text], images=images, return_tensors="pt").to(model.device)
+    else:
+        inputs = processor(text=[chat_text], return_tensors="pt").to(model.device)
+
     gen_kwargs = {
         "max_new_tokens": int(payload.get("max_tokens", 512)),
         "temperature": float(payload.get("temperature", 0.2)),
         "do_sample": float(payload.get("temperature", 0.2)) > 0.0,
         "top_p": float(payload.get("top_p", 0.9)),
     }
-    with torch.no_grad():
+
+    import torch
+    with torch.inference_mode():
         output_ids = model.generate(**inputs, **gen_kwargs)
 
     generated = processor.batch_decode(
@@ -236,8 +321,8 @@ def _hf_vlm_infer(payload: Dict[str, Any]) -> Dict[str, Any]:
             try: im.close()
             except: pass
         del inputs, output_ids
+        gc.collect()
         if bundle["device"] == "cuda":
-            import torch
             torch.cuda.empty_cache()
     except Exception:
         pass
@@ -253,25 +338,6 @@ def _hf_vlm_infer(payload: Dict[str, Any]) -> Dict[str, Any]:
             "finish_reason": "stop"
         }]
     }
-
-# =====================
-# Console log mirroring
-# =====================
-PRINT_CHILD_LOGS = True  # show llama/lmdeploy logs in this console
- # -------- console log mirroring helpers (restauradas) --------
-def _ensure_triton_stub() -> str:
-    stub_root = LOG_DIR / "stubs"
-    pkg = stub_root / "triton"
-    pkg.mkdir(parents=True, exist_ok=True)
-    (pkg / "__init__.py").write_text(
-        '# Triton stub; LMDeploy runs with --eager-mode on Windows.\n'
-        '__version__ = "0.0.0-win-stub"\n'
-        'def __getattr__(name):\n'
-        '    raise ImportError("Triton is not available on Windows; stub active.")\n',
-        encoding="utf-8"
-    )
-    (pkg / "language.py").write_text("", encoding="utf-8")
-    return str(stub_root)
 
 def _spawn_with_tee(cmd, log_path: Path, env=None, creationflags=0):
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -339,16 +405,9 @@ def _synth_with_piper(text: str) -> bytes:
     en Windows da error.
     """
     import tempfile, os
-
     voice = _effective_piper_voice()
-    print(f"[TTS] Piper exe: {PIPER_EXE}")
-    print(f"[TTS] Piper voice: {voice}")
-    print(f"[TTS] TMP dir: {TTS_TMP_DIR}")
-
-    # archivo temporal .wav controlado por nosotros
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir=str(TTS_TMP_DIR))
-    tmp_wav_path = tmp.name
-    tmp.close()
+    with tempfile.NamedTemporaryFile(dir=TTS_TMP_DIR, suffix=".wav", delete=False) as tmp:
+        tmp_wav_path = tmp.name
 
     env = os.environ.copy()
     env["TMP"] = env["TEMP"] = env["TMPDIR"] = str(TTS_TMP_DIR)
@@ -478,10 +537,14 @@ STT_COMPUTE_TYPE = "float16" if USE_CUDA_FOR_STT else "int8"
 # MANAGER DE PROCESOS GPU
 # =========================
 
+
+import threading
+
 class GpuProcessManager:
     def __init__(self):
         self.mode = None
         self.proc: Optional[subprocess.Popen] = None
+        self._lock = threading.RLock()
 
     def _kill_tree(self, p: psutil.Process):
         for c in p.children(recursive=True):
@@ -491,79 +554,81 @@ class GpuProcessManager:
         except: pass
 
     def stop(self, grace: float = 3.0):
-        if not self.proc:
-            self.mode = None
-            return
-        try:
-            if self.proc.poll() is None:
-                p = psutil.Process(self.proc.pid)
-                if os.name == "nt":
-                    # try graceful CTRL_BREAK to the process group
-                    try:
-                        os.kill(self.proc.pid, signal.CTRL_BREAK_EVENT)  # requires CREATE_NEW_PROCESS_GROUP
-                        p.wait(timeout=grace)
-                    except Exception:
-                        pass
-                    # if still alive -> taskkill whole tree
-                    if self.proc.poll() is None:
+        with self._lock:
+            if not self.proc:
+                self.mode = None
+                return
+            try:
+                if self.proc.poll() is None:
+                    p = psutil.Process(self.proc.pid)
+                    if os.name == "nt":
+                        # try graceful CTRL_BREAK to the process group
                         try:
-                            subprocess.run(["taskkill","/PID",str(self.proc.pid),"/T","/F"],
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                            os.kill(self.proc.pid, signal.CTRL_BREAK_EVENT)  # requires CREATE_NEW_PROCESS_GROUP
+                            p.wait(timeout=grace)
                         except Exception:
                             pass
-                else:
-                    try:
-                        p.terminate()
-                        p.wait(timeout=grace)
-                    except Exception:
-                        pass
-                    if self.proc.poll() is None:
-                        self._kill_tree(p)
-        except Exception:
-            pass
-        finally:
-            self.proc = None
-            self.mode = None
+                        # if still alive -> taskkill whole tree
+                        if self.proc.poll() is None:
+                            try:
+                                subprocess.run(["taskkill","/PID",str(self.proc.pid),"/T","/F"],
+                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            p.terminate()
+                            p.wait(timeout=grace)
+                        except Exception:
+                            pass
+                        if self.proc.poll() is None:
+                            self._kill_tree(p)
+            except Exception:
+                pass
+            finally:
+                self.proc = None
+                self.mode = None
 
     def ensure_mode(self, mode: str):
         assert mode in ("llm", "vlm")
-        if self.mode == mode and self.proc and self.proc.poll() is None:
-            return
+        with self._lock:
+            if self.mode == mode and self.proc and self.proc.poll() is None:
+                return
 
-        self.stop()
-        time.sleep(1.5)
+            self.stop()
+            time.sleep(1.5)
 
-        if mode == "llm":
-            print("Starting llama-server...")
-            log_path = LOG_DIR / "llama-server.log"
-            try:
-                flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-                self.proc = _spawn_with_tee([LLAMA_SERVER_EXE] + LLAMA_ARGS, log_path, creationflags=flags)
-                self._wait_llama_ready(timeout=600, proc=self.proc)
-            except Exception as e:
-                raise RuntimeError(f"llama-server no inició: {e}. Ver {log_path}")
-        else:
-            print("Starting lmdeploy api_server...")
-            log_path = LOG_DIR / "lmdeploy.log"
-            try:
-                env = os.environ.copy()
-                # Belt & suspenders: disable Triton / compilers in child
-                env["LMDEPLOY_DISABLE_TRITON"] = "1"
-                env["PYTORCH_TRITON_DISABLE"] = "1"
-                env["TORCHINDUCTOR_FX_ENABLE"] = "0"
-                env["TORCHINDUCTOR_DISABLE"] = "1"
-                # Add Triton stub so 'import triton' succeeds
-                stub_root = _ensure_triton_stub()
-                env["PYTHONPATH"] = stub_root + (os.pathsep + env.get("PYTHONPATH",""))
+            if mode == "llm":
+                print("Starting llama-server...")
+                log_path = LOG_DIR / "llama-server.log"
+                try:
+                    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                    self.proc = _spawn_with_tee([LLAMA_SERVER_EXE] + LLAMA_ARGS, log_path, creationflags=flags)
+                    self._wait_llama_ready(timeout=600, proc=self.proc)
+                except Exception as e:
+                    raise RuntimeError(f"llama-server no inició: {e}. Ver {log_path}")
+            else:
+                print("Starting lmdeploy api_server...")
+                log_path = LOG_DIR / "lmdeploy.log"
+                try:
+                    env = os.environ.copy()
+                    # Belt & suspenders: disable Triton / compilers in child
+                    env["LMDEPLOY_DISABLE_TRITON"] = "1"
+                    env["PYTORCH_TRITON_DISABLE"] = "1"
+                    env["TORCHINDUCTOR_FX_ENABLE"] = "0"
+                    env["TORCHINDUCTOR_DISABLE"] = "1"
+                    # Add Triton stub so 'import triton' succeeds
+                    stub_root = _ensure_triton_stub()
+                    env["PYTHONPATH"] = stub_root + (os.pathsep + env.get("PYTHONPATH",""))
 
-                flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-                self.proc = _spawn_with_tee(LMDEPLOY_CMD + VLM_ARGS, log_path, env=env, creationflags=flags)
-                # First boot can be slow -> 480s
-                self._wait_http_ok(f"http://{VLM_HOST}:{VLM_PORT}/v1/models", timeout=480, proc=self.proc)
-            except Exception as e:
-                raise RuntimeError(f"lmdeploy no inició: {e}. Ver {log_path}")
+                    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                    self.proc = _spawn_with_tee(LMDEPLOY_CMD + VLM_ARGS, log_path, env=env, creationflags=flags)
+                    # First boot can be slow -> 480s
+                    self._wait_http_ok(f"http://{VLM_HOST}:{VLM_PORT}/v1/models", timeout=480, proc=self.proc)
+                except Exception as e:
+                    raise RuntimeError(f"lmdeploy no inició: {e}. Ver {log_path}")
 
-        self.mode = mode
+            self.mode = mode
 
     def _wait_llama_ready(self, timeout=600, proc: Optional[subprocess.Popen]=None):
         """espera a que /health devuelva 200 (modelo cargado)"""
@@ -601,8 +666,24 @@ class GpuProcessManager:
         raise RuntimeError(f"{url} no respondió 200 en {timeout}s.")
 
 
+
+# --- Global async httpx client ---
+_httpx_async_client: httpx.AsyncClient = None
+
+def get_httpx_client() -> httpx.AsyncClient:
+    return _httpx_async_client
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _httpx_async_client
+    _httpx_async_client = httpx.AsyncClient(timeout=None)
+    yield
+    await _httpx_async_client.aclose()
+
+app = FastAPI(title="IA Gateway (LLM/VLM/ALM)", lifespan=lifespan)
 manager = GpuProcessManager()
-app = FastAPI(title="IA Gateway (LLM/VLM/ALM)")
 
 @atexit.register
 def _at_exit():
@@ -630,59 +711,131 @@ stt_model = WhisperModel(STT_MODEL_SIZE, device=STT_DEVICE, compute_type=STT_COM
 # =========================
 # /llm  -> proxyea a llama.cpp
 # =========================
+
+# --- Pydantic model for LLM payload ---
+class LLMMessage(BaseModel):
+    role: str
+    content: str
+
+class LLMChatPayload(BaseModel):
+    model: str
+    messages: list[LLMMessage]
+    temperature: float = 0.2
+    max_tokens: int = 512
+    top_p: float = 0.9
+
+from fastapi.concurrency import run_in_threadpool
+
+
 @app.post("/llm")
-async def llm_chat(payload: Dict[str, Any]):
+async def llm_chat(payload: LLMChatPayload, client: httpx.AsyncClient = Depends(get_httpx_client)):
     try:
-        manager.ensure_mode("llm")
+        await run_in_threadpool(manager.ensure_mode, "llm")
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    async with httpx.AsyncClient(timeout=None) as client:
-        url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
-        r = await client.post(url, json=payload)
-        return JSONResponse(status_code=r.status_code, content=r.json())
+    url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
+    r = await client.post(url, json=payload.model_dump())
+    return JSONResponse(status_code=r.status_code, content=r.json())
+
+# =========================
+# /clm -> igual a /llm pero usando Qwen/Qwen2.5-VL-7B-Instruct (HF in-proc)
+# =========================
+from fastapi.concurrency import run_in_threadpool
+
+@app.post("/clm")
+async def clm_chat(payload: LLMChatPayload):
+    # Opcional: liberar GPU si tenés llama-server corriendo y querés evitar OOMs.
+    # await run_in_threadpool(manager.stop)
+
+    # Reutilizamos el mismo schema que /llm, pero llamamos al backend HF
+    # (Qwen2.5-VL-7B-Instruct) que ya maneja _hf_vlm_infer.
+    hf_payload = {
+        "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+        "temperature": payload.temperature,
+        "max_tokens": payload.max_tokens,
+        "top_p": payload.top_p,
+        "messages": [{"role": m.role, "content": m.content} for m in payload.messages],
+    }
+    try:
+        resp = await run_in_threadpool(_hf_vlm_infer, hf_payload)
+        return JSONResponse(status_code=200, content=resp)
+    except Exception as e:
+        print("[CLM/HF] Exception:\n" + traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"CLM error: {e}")
 
 # =========================
 # /vlm -> VLM backend selector (HF Transformers or LMDeploy)
 # =========================
+
+# --- Pydantic model for VLM payload ---
+class VLMImageUrl(BaseModel):
+    url: str
+
+class VLMContentPart(BaseModel):
+    type: str
+    image_url: Optional[VLMImageUrl] = None
+
+class VLMMessage(BaseModel):
+    role: str
+    content: list[VLMContentPart] | str
+
+class VLMChatPayload(BaseModel):
+    model: Optional[str] = None
+    messages: list[VLMMessage]
+    temperature: float = 0.2
+    max_tokens: int = 512
+    top_p: float = 0.9
+
 @app.post("/vlm")
-async def vlm_chat(payload: Dict[str, Any]):
+async def vlm_chat(payload: VLMChatPayload, client: httpx.AsyncClient = Depends(get_httpx_client)):
     if VLM_BACKEND == "hf":
         try:
-            resp = _hf_vlm_infer(payload)
+            resp = await run_in_threadpool(_hf_vlm_infer, payload.model_dump())
             return JSONResponse(status_code=200, content=resp)
         except Exception as e:
             print("[HF VLM] Exception:\n" + traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"HF VLM error: {e}")
     else:
         try:
-            manager.ensure_mode("vlm")
+            await run_in_threadpool(manager.ensure_mode, "vlm")
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
-        async with httpx.AsyncClient(timeout=None) as client:
-            url = f"http://{VLM_HOST}:{VLM_PORT}/v1/chat/completions"
-            r = await client.post(url, json=payload)
-            return JSONResponse(status_code=r.status_code, content=r.json())
+        url = f"http://{VLM_HOST}:{VLM_PORT}/v1/chat/completions"
+        r = await client.post(url, json=payload.model_dump())
+        return JSONResponse(status_code=r.status_code, content=r.json())
 
 # =========================
 # /alm -> audio pipeline (STT -> LLM -> opcional TTS)
 # =========================
-@app.post("/alm")
+
+class ALMResponse(BaseModel):
+    stt_text: str
+    llm_text: str
+    tts_audio: Optional[str] = None
+    tts_error: Optional[str] = None
+
+@app.post("/alm", response_model=ALMResponse)
 async def alm_pipeline(
     file: UploadFile = File(...),
     system_prompt: Optional[str] = Form("You are a helpful assistant."),
     tts: Optional[bool] = Form(True),
-    target_lang: Optional[str] = Form("es")
+    target_lang: Optional[str] = Form("es"),
+    client: httpx.AsyncClient = Depends(get_httpx_client)
 ):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename or "audio").suffix or ".wav") as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        wav_path = tmp.name
+    def transcribe_and_llm():
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename or "audio").suffix or ".wav") as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            wav_path = tmp.name
 
-    segments, info = stt_model.transcribe(wav_path, language=target_lang, vad_filter=True)
-    user_text = "".join([s.text for s in segments]).strip()
-    os.unlink(wav_path)
+        segments, info = stt_model.transcribe(wav_path, language=target_lang, vad_filter=True)
+        user_text = "".join([s.text for s in segments]).strip()
+        os.unlink(wav_path)
+        return user_text
+
+    user_text = await run_in_threadpool(transcribe_and_llm)
 
     try:
-        manager.ensure_mode("llm")
+        await run_in_threadpool(manager.ensure_mode, "llm")
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -694,30 +847,29 @@ async def alm_pipeline(
             {"role": "user", "content": user_text}
         ]
     }
-    async with httpx.AsyncClient(timeout=None) as client:
-        url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
-        r = await client.post(url, json=llm_payload)
-        r.raise_for_status()
-        llm_resp = r.json()
-        answer_text = llm_resp["choices"][0]["message"]["content"]
+    url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
+    r = await client.post(url, json=llm_payload)
+    r.raise_for_status()
+    llm_resp = r.json()
+    answer_text = llm_resp["choices"][0]["message"]["content"]
 
     # 3) TTS (opcional, Piper a WAV en base64)
     audio_b64 = None
     tts_error = None
     if tts:
         try:
-            wav_bytes = _synth_with_piper(answer_text)
+            wav_bytes = await run_in_threadpool(_synth_with_piper, answer_text)
             audio_b64 = "data:audio/wav;base64," + base64.b64encode(wav_bytes).decode("ascii")
         except Exception as e:
             tts_error = str(e)
             print("[TTS] ERROR:", tts_error)
 
-    return {
-        "stt_text": user_text,
-        "llm_text": answer_text,
-        "tts_audio": audio_b64,
-        "tts_error": tts_error,
-    }
+    return ALMResponse(
+        stt_text=user_text,
+        llm_text=answer_text,
+        tts_audio=audio_b64,
+        tts_error=tts_error,
+    )
 
 @app.get("/health")
 def health():

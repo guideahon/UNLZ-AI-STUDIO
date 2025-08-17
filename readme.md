@@ -104,8 +104,7 @@ lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
 
 ```powershell
 python .\gateway.py
-# (o)
-uvicorn gateway:app --host 0.0.0.0 --port 8000
+
 ```
 
 - **/llm** → proxyea a **llama-server** (si no está, lo levanta y apaga `lmdeploy`)  
@@ -116,7 +115,8 @@ uvicorn gateway:app --host 0.0.0.0 --port 8000
 
 ## 🧪 Ejemplos (PowerShell)
 
-### LLM (texto)
+
+### LLM (código)
 ```powershell
 # 1) Health (opcional)
 Invoke-RestMethod "http://localhost:8000/health"
@@ -147,14 +147,53 @@ if ($msg.content -is [array]) {
 
 ```
 
+### CLM (rápido, chat de texto)
+```powershell
+# 1) Health (opcional)
+Invoke-RestMethod "http://localhost:8000/health"
+
+# 2) Body JSON (mismo schema que /llm)
+$body = @{
+  model = "qwen2.5-vl-7b"   # opcional, se ignora internamente, pero lo dejamos documentado
+  temperature = 0.3
+  max_tokens  = 512
+  top_p       = 0.9
+  messages = @(
+    @{ role="system"; content="Respondé breve y claro. Si hay código, usá bloques Markdown." },
+    @{ role="user";   content="Dame 3 ideas de TPs para Mecatrónica con Arduino y visión." }
+  )
+} | ConvertTo-Json -Depth 5
+
+# 3) Enviar (UTF-8) y ver la respuesta (raw JSON y texto)
+$raw = Invoke-WebRequest -Uri "http://localhost:8000/clm" `
+  -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
+| Select-Object -ExpandProperty Content
+$raw
+
+# Extraer texto (por compatibilidad si algún backend devuelve array de partes)
+$resp = $raw | ConvertFrom-Json
+$msg  = $resp.choices[0].message
+if ($msg.content -is [array]) {
+  ($msg.content | ForEach-Object { $_.text }) -join "`n"
+} else {
+  $msg.content
+}
+
+
+```
+
+
 ### VLM (visión, estilo OpenAI)
 ```powershell
-# IMPORTANTE: la imagen debe ser accesible por el servidor (URL pública)
-$imageUrl = "https://upload.wikimedia.org/wikipedia/commons/3/3a/PCB_SMD.jpg"
+# Valid thumbnail URL
+$imageUrl = "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/PCB_SMD.jpg/1024px-PCB_SMD.jpg"
 
 $body = @{
   model = "qwen2.5-vl-7b"
   messages = @(
+    @{ role="system"; content="Respondé breve y claro en el mismo idioma que te preguntaron." },
     @{
       role    = "user"
       content = @(
@@ -165,7 +204,6 @@ $body = @{
   )
 } | ConvertTo-Json -Depth 8
 
-# Enviar (UTF-8) y ver raw JSON
 $raw = Invoke-WebRequest -Uri "http://localhost:8000/vlm" `
   -Method Post `
   -ContentType "application/json; charset=utf-8" `
@@ -173,7 +211,6 @@ $raw = Invoke-WebRequest -Uri "http://localhost:8000/vlm" `
 | Select-Object -ExpandProperty Content
 $raw
 
-# Extraer texto (string o array de partes)
 $resp = $raw | ConvertFrom-Json
 $msg  = $resp.choices[0].message
 if ($msg.content -is [array]) {
