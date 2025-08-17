@@ -1,6 +1,7 @@
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module=r"ctranslate2(\.|$)")
+#warnings.filterwarnings("ignore", category=UserWarning, module=r"ctranslate2(\.|$)")
 import os, sys, time, base64, tempfile, shutil, subprocess, threading
+import atexit, signal, gc, asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any
 import psutil
@@ -20,12 +21,58 @@ TTS_TMP_DIR = LOG_DIR / "piper_tmp"           # opción A: dentro de logs/
 TTS_TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 
+
+# --- VLM (LMDeploy / HF ubicaciones) ---
+LMDEPLOY_CMD  = [sys.executable, "-m", "lmdeploy"]
+VLM_MODEL_ID  = "Qwen/Qwen2.5-VL-7B-Instruct"
+VLM_CACHE_DIR = r"C:\models\qwen2.5-vl-7b-hf"   # <-- DEBE existir antes del warm
+VLM_HOST = "127.0.0.1"
+VLM_PORT = 9090
+VLM_ARGS = [
+    "serve", "api_server", VLM_MODEL_ID,
+    "--backend", "pytorch",
+    "--model-format", "hf",
+    "--download-dir", VLM_CACHE_DIR,
+    "--server-port", str(VLM_PORT),
+    "--model-name", "qwen2.5-vl-7b",
+    "--eager-mode",
+]
+
 # --- VLM HuggingFace backend imports ---
 import requests
 from io import BytesIO
 from PIL import Image
 import traceback
 from urllib.parse import urlparse
+
+# --- Warm helpers: leer archivos a RAM (page-cache) sin guardarlos en Python ---
+from typing import Union
+def _warm_file(path: Union[str, Path], chunk_mb: int = 64) -> None:
+    p = Path(path)
+    if not p.is_file():
+        print(f"[warm] skip (no file): {p}")
+        return
+    try:
+        sz = 0
+        chunk = 1024 * 1024 * chunk_mb
+        with open(p, "rb", buffering=0) as f:
+            while True:
+                b = f.read(chunk)
+                if not b:
+                    break
+                sz += len(b)
+        print(f"[warm] {p} -> {sz / (1024**3):.2f} GiB cached")
+    except Exception as e:
+        print(f"[warm] error {p}: {e}")
+
+def _warm_dir(root: Union[str, Path], patterns: tuple[str, ...]) -> None:
+    root = Path(root)
+    if not root.exists():
+        print(f"[warm] skip dir: {root}")
+        return
+    for pat in patterns:
+        for f in root.rglob(pat):
+            _warm_file(f)
 
 
 # Fallback image if payload URLs fail or are missing
@@ -41,19 +88,60 @@ _hf_vlm = {"model": None, "processor": None, "device": None}
 def _ensure_hf_vlm():
     if _hf_vlm["model"] is not None:
         return _hf_vlm
+
     from transformers import AutoProcessor, AutoModelForImageTextToText
-    import torch
-    model_id = "Qwen/Qwen2.5-VL-7B-Instruct"
+    import torch, os
+    model_id_hub = "Qwen/Qwen2.5-VL-7B-Instruct"
+    cache_dir = VLM_CACHE_DIR  # ya definido arriba
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        device_map="auto" if device == "cuda" else None,
-        trust_remote_code=True,
-    ).eval()
+
+    def _load_processor(local_only: bool):
+        return AutoProcessor.from_pretrained(
+            cache_dir if local_only else model_id_hub,
+            trust_remote_code=True,
+            cache_dir=cache_dir,
+            local_files_only=local_only
+        )
+
+    def _load_model(local_only: bool):
+        if device == "cuda":
+            m = AutoModelForImageTextToText.from_pretrained(
+                cache_dir if local_only else model_id_hub,
+                torch_dtype=torch.float16,
+                device_map={"": "cpu"},          # carga a RAM primero
+                low_cpu_mem_usage=False,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                local_files_only=local_only
+            )
+            return m.to("cuda", dtype=torch.float16)
+        else:
+            return AutoModelForImageTextToText.from_pretrained(
+                cache_dir if local_only else model_id_hub,
+                torch_dtype=torch.float32,
+                device_map=None,
+                low_cpu_mem_usage=False,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                local_files_only=local_only
+            )
+
+    # 1) Intento 100% offline
+    try:
+        processor = _load_processor(local_only=True)
+    except Exception as e:
+        print(f"[HF VLM] Processor local no disponible ({e}). Descargando al cache_dir ...")
+        processor = _load_processor(local_only=False)
+
+    try:
+        model = _load_model(local_only=True)
+    except Exception as e:
+        print(f"[HF VLM] Modelo local no disponible ({e}). Descargando al cache_dir ...")
+        model = _load_model(local_only=False)
+
+    model.eval()
     _hf_vlm.update(model=model, processor=processor, device=device)
-    print(f"[HF VLM] Loaded {model_id} on {device}")
+    print(f"[HF VLM] Loaded {cache_dir} (fallback OK) on {device}")
     return _hf_vlm
 
 
@@ -142,6 +230,18 @@ def _hf_vlm_infer(payload: Dict[str, Any]) -> Dict[str, Any]:
         output_ids[:, inputs["input_ids"].shape[-1]:], skip_special_tokens=True
     )[0]
 
+    # cleanup
+    try:
+        for im in images:
+            try: im.close()
+            except: pass
+        del inputs, output_ids
+        if bundle["device"] == "cuda":
+            import torch
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
     return {
         "id": "chatcmpl-local-hf",
         "object": "chat.completion",
@@ -176,6 +276,9 @@ def _ensure_triton_stub() -> str:
 def _spawn_with_tee(cmd, log_path: Path, env=None, creationflags=0):
     log_path.parent.mkdir(parents=True, exist_ok=True)
     f = open(log_path, "a", encoding="utf-8", buffering=1)
+    # IMPORTANT on Windows: own process group so we can send CTRL_BREAK
+    if os.name == "nt":
+        creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -183,7 +286,8 @@ def _spawn_with_tee(cmd, log_path: Path, env=None, creationflags=0):
         text=True,
         bufsize=1,
         env=env,
-        creationflags=creationflags
+        creationflags=creationflags,
+        close_fds=(os.name != "nt"),
     )
     def _pump():
         prefix = f"[{log_path.name}] "
@@ -299,32 +403,68 @@ LLAMA_SERVER_EXE = "llama-server"  # Vulkan
 LLAMA_MODEL = r"C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf"
 LLAMA_HOST       = "127.0.0.1"
 LLAMA_PORT       = 8080
+
 LLAMA_ARGS = [
     "-m", LLAMA_MODEL,
     "--host", LLAMA_HOST, "--port", str(LLAMA_PORT),
     "--ctx-size", "4096",
     "--n-gpu-layers", "28",    # si tu build no acepta este flag, usar --ngl
-    "-t", "12"
+    "-t", "12",
+    "--no-mmap",           # fuerza copia completa a RAM (en vez de mmapped desde disco)
+    # "--mlock",           # (opcional) intenta “fijar” en RAM; en Windows puede requerir privilegios
     # "--flash-attn"          # si usás CUDA/cuBLAS (no Vulkan)
 ]
 
-# --- VLM (LMDeploy 0.9.2, Windows) ---
-LMDEPLOY_CMD  = [sys.executable, "-m", "lmdeploy"]
-VLM_MODEL_ID  = "Qwen/Qwen2.5-VL-7B-Instruct"
-VLM_CACHE_DIR = r"C:\models\qwen2.5-vl-7b-hf"
-VLM_HOST = "127.0.0.1"
-VLM_PORT = 9090
+# --- Preflight cleanup: kill orphans and free ports ---
+def _kill_by_port(port: int):
+    try:
+        for c in psutil.net_connections(kind='tcp'):
+            if c.laddr and c.laddr.port == port and c.pid:
+                try: psutil.Process(c.pid).kill()
+                except: pass
+    except Exception:
+        pass
 
-# PyTorch backend + HF formato + cache local + EAGER (sin Triton)
-VLM_ARGS = [
-    "serve", "api_server", VLM_MODEL_ID,
-    "--backend", "pytorch",
-    "--model-format", "hf",
-    "--download-dir", VLM_CACHE_DIR,
-    "--server-port", str(VLM_PORT),
-    "--model-name", "qwen2.5-vl-7b",
-    "--eager-mode",
-]
+def _kill_orphans():
+    for p in psutil.process_iter(['pid','name','cmdline']):
+        try:
+            name = (p.info['name'] or '').lower()
+            cmd  = ' '.join(p.info['cmdline'] or []).lower()
+            if 'llama-server' in name or 'llama-server' in cmd:
+                p.kill()
+            if 'lmdeploy' in cmd and 'api_server' in cmd:
+                p.kill()
+        except Exception:
+            pass
+
+print("[preflight] killing orphans / freeing ports …")
+_kill_orphans()
+_kill_by_port(LLAMA_PORT)
+_kill_by_port(VLM_PORT)
+
+# -------- Warm all weights into RAM (no GPU allocation yet) --------
+print("[warm] Priming OS page cache (LLM/VLM/TTS) ...")
+try:
+    # LLM (GGUF)
+    _warm_file(LLAMA_MODEL)
+
+    # VLM (HF cache carpeta)
+    if 'VLM_CACHE_DIR' in globals() and os.path.isdir(VLM_CACHE_DIR):
+        _warm_dir(VLM_CACHE_DIR, patterns=(
+            "*.safetensors", "tokenizer.json", "tokenizer.model", "merges.txt", "vocab.json", "*.json"
+        ))
+    else:
+        print("[warm] skip VLM: VLM_CACHE_DIR no definido o carpeta inexistente")
+
+    # Piper voice (onnx + json sidecar si existe)
+    _warm_file(PIPER_VOICE)
+    pv_json = PIPER_VOICE + ".json" if not PIPER_VOICE.endswith(".json") else PIPER_VOICE
+    if os.path.isfile(pv_json):
+        _warm_file(pv_json)
+except Exception as e:
+    print(f"[warm] Warming skipped with error: {e}")
+
+
 
 # STT (usar CUDA o CPU)
 USE_CUDA_FOR_STT = False
@@ -337,10 +477,11 @@ STT_COMPUTE_TYPE = "float16" if USE_CUDA_FOR_STT else "int8"
 # =========================
 # MANAGER DE PROCESOS GPU
 # =========================
+
 class GpuProcessManager:
     def __init__(self):
-        self.mode = None  # "llm" | "vlm" | None
-        self.proc = None
+        self.mode = None
+        self.proc: Optional[subprocess.Popen] = None
 
     def _kill_tree(self, p: psutil.Process):
         for c in p.children(recursive=True):
@@ -349,14 +490,40 @@ class GpuProcessManager:
         try: p.kill()
         except: pass
 
-    def stop(self):
-        if self.proc and self.proc.poll() is None:
-            try:
+    def stop(self, grace: float = 3.0):
+        if not self.proc:
+            self.mode = None
+            return
+        try:
+            if self.proc.poll() is None:
                 p = psutil.Process(self.proc.pid)
-                self._kill_tree(p)
-            except: pass
-        self.proc = None
-        self.mode = None
+                if os.name == "nt":
+                    # try graceful CTRL_BREAK to the process group
+                    try:
+                        os.kill(self.proc.pid, signal.CTRL_BREAK_EVENT)  # requires CREATE_NEW_PROCESS_GROUP
+                        p.wait(timeout=grace)
+                    except Exception:
+                        pass
+                    # if still alive -> taskkill whole tree
+                    if self.proc.poll() is None:
+                        try:
+                            subprocess.run(["taskkill","/PID",str(self.proc.pid),"/T","/F"],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        p.terminate()
+                        p.wait(timeout=grace)
+                    except Exception:
+                        pass
+                    if self.proc.poll() is None:
+                        self._kill_tree(p)
+        except Exception:
+            pass
+        finally:
+            self.proc = None
+            self.mode = None
 
     def ensure_mode(self, mode: str):
         assert mode in ("llm", "vlm")
@@ -433,10 +600,30 @@ class GpuProcessManager:
                 time.sleep(1.0)
         raise RuntimeError(f"{url} no respondió 200 en {timeout}s.")
 
+
 manager = GpuProcessManager()
 app = FastAPI(title="IA Gateway (LLM/VLM/ALM)")
 
+@atexit.register
+def _at_exit():
+    print("[atexit] stopping child processes …")
+    try: manager.stop()
+    except: pass
+    # also clean any that escaped
+    _kill_orphans()
+    _kill_by_port(LLAMA_PORT)
+    _kill_by_port(VLM_PORT)
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    print("[fastapi] shutdown -> stopping children …")
+    manager.stop()
+    _kill_orphans()
+    _kill_by_port(LLAMA_PORT)
+    _kill_by_port(VLM_PORT)
+
 # Pre-carga STT (en CPU por defecto para evitar conflictos)
+os.environ.setdefault("CT2_USE_EXPERIMENTAL_PACKED_GEMM", "1")  # acelera matmul en CPU si aplica
 print("Loading WhisperModel (STT)...")
 stt_model = WhisperModel(STT_MODEL_SIZE, device=STT_DEVICE, compute_type=STT_COMPUTE_TYPE)
 
@@ -537,4 +724,11 @@ def health():
     return {"status": "ok", "mode": manager.mode}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    try:
+        uvicorn.run(app, host="0.0.0.0", port=8000, reload=False)
+    finally:
+        print("[main] finally -> stopping children …")
+        manager.stop()
+        _kill_orphans()
+        _kill_by_port(LLAMA_PORT)
+        _kill_by_port(VLM_PORT)

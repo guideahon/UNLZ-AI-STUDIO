@@ -136,9 +136,6 @@ $raw = Invoke-WebRequest -Uri "http://localhost:8000/llm" `
   -ContentType "application/json; charset=utf-8" `
   -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
 | Select-Object -ExpandProperty Content
-$raw
-
-# 4) (Opcional) Extraer solo el texto, sea string o array de partes
 $resp = $raw | ConvertFrom-Json
 $msg  = $resp.choices[0].message
 if ($msg.content -is [array]) {
