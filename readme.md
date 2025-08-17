@@ -17,12 +17,12 @@ Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobb
 
 ---
 
-## 🧩 Requisitos
+## 🧩 Requisitos PREVIOS
 
 - Windows 10/11 con PowerShell  
-- Python 3.10+ (64-bit)  
-- NVIDIA driver actualizado (CUDA opcional)  
+- Python 3.10+ (64-bit) https://www.python.org/downloads/
 - Conexión a internet para descargar modelos
+- CUDA Toolkit https://developer.nvidia.com/cuda-toolkit
 
 ---
 
@@ -47,6 +47,24 @@ hf download rhasspy/piper-voices `
   --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx*" `
   --local-dir "C:\piper\voices\es_AR\daniela_high"
 
+> Tip: si preferís sin backticks, ejecutá cada `hf download` en **una sola línea**.
+
+🔊 Instalar Piper (TTS) desde GitHub — recomendado en Windows
+
+El wrapper de pip install piper-tts puede fallar en Windows. Usá el binario nativo.
+
+Abrí Releases: https://github.com/rhasspy/piper/releases
+
+Descargá el asset piper_windows_amd64.zip de la versión más reciente.
+
+Creá la carpeta y descomprimí directo ahí:
+
+New-Item -ItemType Directory -Force -Path "C:\piper" | Out-Null
+$zip = "$env:TEMP\piper_windows_amd64.zip"
+Invoke-WebRequest "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip" -OutFile $zip
+Expand-Archive $zip -DestinationPath "C:\piper" -Force
+Remove-Item $zip
+
 ```
 
 ### 2) Dependencias
@@ -61,11 +79,14 @@ pip install -U fastapi uvicorn httpx psutil python-multipart faster-whisper
 # VLM (LMDeploy)
 pip install -U lmdeploy
 
+# PyTorch CUDA (CUDA 12.1 wheels; ajustá si usás otra versión)
+pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
+
 # Hugging Face (incluye el comando 'hf')
 pip install -U huggingface_hub
 
-# TTS (instala el binario 'piper' en tu PATH de Python)
-pip install -U piper-tts
+# Necesario para llamar a qwen_vl
+pip install -U transformers accelerate pillow requests qwen_vl_utils
 
 #TurboMind offline mode
 lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
@@ -76,8 +97,6 @@ lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
 - **GGUF:** `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct.Q5_K_M.gguf`  
 - **VLM:**  `C:\models\qwen2.5-vl-7b-hf`  
 - **Piper:** `C:\piper\voices\es_AR\daniela_high\...`
-
-> Tip: si preferís sin backticks, ejecutá cada `hf download` en **una sola línea**.
 
 ---
 
@@ -168,14 +187,102 @@ if ($msg.content -is [array]) {
 
 ```
 
-### ALM (audio completo)
-```powershell
+### ALM (audio completo) IMPORTANTE, CORRER EL COMANDO CON LA TERMINAL ABIERTA EN LA MISMA RUTA DE gateway.py
+
+```powershell 5
+
+$ErrorActionPreference = "Stop"
+
+# Rutas basadas en la carpeta actual
+$here   = (Get-Location).Path
+$in     = Join-Path $here 'test.wav'
+$outDir = Join-Path $here 'audio-out'
+$out    = Join-Path $outDir 'respuesta.wav'
+
+if (-not (Test-Path $in)) { throw "No se encontró el archivo de entrada: $in" }
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+# ----- Enviar multipart/form-data con .NET HttpClient (compatible con PS 5.1) -----
+Add-Type -AssemblyName System.Net.Http
+
+$client = [System.Net.Http.HttpClient]::new()
+$mp     = [System.Net.Http.MultipartFormDataContent]::new()
+
+# Parte de archivo
+$fs = [System.IO.FileStream]::new($in, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read)
+$sc = [System.Net.Http.StreamContent]::new($fs)
+$sc.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("audio/wav")
+$mp.Add($sc, "file", [System.IO.Path]::GetFileName($in))
+
+# Partes de texto
+$mp.Add([System.Net.Http.StringContent]::new("Sos un asistente de mecatrónica que responde de forma clara."), "system_prompt")
+$mp.Add([System.Net.Http.StringContent]::new("true"), "tts")
+$mp.Add([System.Net.Http.StringContent]::new("es"), "target_lang")
+
+try {
+  $resp = $client.PostAsync("http://localhost:8000/alm", $mp).Result
+  if (-not $resp.IsSuccessStatusCode) {
+    $body = $resp.Content.ReadAsStringAsync().Result
+    throw "HTTP $($resp.StatusCode) $($resp.ReasonPhrase) :: $body"
+  }
+  $raw = $resp.Content.ReadAsStringAsync().Result
+}
+finally {
+  $fs.Dispose()
+  $client.Dispose()
+}
+
+# ----- Procesar respuesta -----
+$jr = $raw | ConvertFrom-Json
+$jr.stt_text
+$jr.llm_text
+
+# Mostrar error de TTS si vino
+if ($jr.tts_error) {
+  "TTS error: $($jr.tts_error)"
+}
+
+if ($jr.tts_audio) {
+  $b64   = ($jr.tts_audio -split ",",2)[-1]
+  $bytes = [Convert]::FromBase64String($b64)
+
+  # Evitar escribir WAV vacío: 44 bytes es el mínimo del header RIFF/WAVE
+  if ($bytes.Length -ge 44) {
+    [IO.File]::WriteAllBytes($out, $bytes)
+    "Audio guardado en: $out (bytes: $($bytes.Length))"
+  } else {
+    "TTS vino vacío (bytes=$($bytes.Length)). No se guardó archivo."
+    if ($jr.tts_error) { "Detalle: $($jr.tts_error)" }
+  }
+} else {
+  "No vino audio (tts_audio = null)." + ($(if ($jr.tts_error) { " Detalle: $($jr.tts_error)" } else { "" }))
+}
+
+
+
+```
+
+```powershell 7
+# Rutas (basadas en la carpeta actual)
+$here   = (Get-Location).Path
+$in     = Join-Path $here 'test.wav'
+$outDir = Join-Path $here 'audio-out'
+$out    = Join-Path $outDir 'respuesta.wav'
+
+if (-not (Test-Path $in)) {
+  Write-Error "No se encontró el archivo de entrada: $in"
+  return
+}
+
+# Crear carpeta de salida si no existe
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
 # Enviar WAV/MP3/M4A, etc. como multipart/form-data
 $resp = Invoke-RestMethod -Uri "http://localhost:8000/alm" -Method Post -Form @{
-  file         = Get-Item "C:\audios\pregunta.wav"
+  file          = Get-Item $in
   system_prompt = "Sos un asistente de mecatrónica que responde de forma clara."
-  tts          = "true"
-  target_lang  = "es"
+  tts           = "true"
+  target_lang   = "es"
 }
 
 # Ver STT y respuesta de LLM
@@ -184,38 +291,49 @@ $resp.llm_text
 
 # Guardar el WAV devuelto (es data:audio/wav;base64,XXXXX)
 if ($resp.tts_audio) {
-  $b64 = ($resp.tts_audio -split ",",2)[-1]
+  $b64   = ($resp.tts_audio -split ",",2)[-1]
   $bytes = [Convert]::FromBase64String($b64)
-  $out = "C:\audios\respuesta.wav"
   [IO.File]::WriteAllBytes($out, $bytes)
   "Audio guardado en: $out"
 } else {
   "No vino audio (tts_audio = null)."
 }
 
+
 ```
 
 ---
 
+
 ## ⚙️ Notas técnicas para `gateway.py`
 
-- Para **LMDeploy** usá **pesos HF (safetensors)**, **no GGUF**.  
-- `VLM_MODEL_PATH = r"C:\models\qwen2.5-vl-7b-hf"`  
-- Para mayor robustez en Windows:
+- Para **LMDeploy 0.9.2**:
+  - Usá repo HF posicional + --download-dir con tu carpeta local:
+    ```python
+    LMDEPLOY_CMD  = [sys.executable, "-m", "lmdeploy"]
+    VLM_MODEL_ID  = "Qwen/Qwen2.5-VL-7B-Instruct"
+    VLM_CACHE_DIR = r"C:\models\qwen2.5-vl-7b-hf"
+    VLM_ARGS = [
+      "serve", "api_server", VLM_MODEL_ID,
+      "--backend", "pytorch", "--model-format", "hf",
+      "--download-dir", VLM_CACHE_DIR,
+      "--server-port", "9090",
+    ]
+    ```
+  - Alternativa 100% offline: convertir a TurboMind y servir la carpeta convertida.
+
+- Para **llama.cpp**:
   ```python
-  LMDEPLOY_CMD = [sys.executable, "-m", "lmdeploy"]
-  # y al lanzar:
-  subprocess.Popen(LMDEPLOY_CMD + VLM_ARGS, ...)
+  LLAMA_ARGS = [
+      "-m", LLAMA_MODEL,
+      "--host", LLAMA_HOST, "--port", str(LLAMA_PORT),
+      "--ctx-size", "8192",
+      "--n-gpu-layers", "35",
+      "-t", "12"
+      # "--flash-attn"  # solo si usás CUDA/cuBLAS (no Vulkan)
+    ]
   ```
-- `LLAMA_ARGS = [
-    "-m", LLAMA_MODEL,
-    "--host", LLAMA_HOST, "--port", str(LLAMA_PORT),
-    "--ctx-size", "8192",
-    "--n-gpu-layers", "35",
-    "-t", "12"
-    # "--flash-attn"  # solo si usás CUDA/cuBLAS (no Vulkan)
-  ]`
-- Si tu versión de llama da error con `--n-gpu-layers`, probá `--ngl`.
+  Si tu versión de llama da error con `--n-gpu-layers`, probá `--ngl`.
 
 ---
 
