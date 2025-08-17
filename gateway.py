@@ -18,6 +18,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field, ValidationError
 from faster_whisper import WhisperModel
 import uvicorn
+from huggingface_hub import snapshot_download
+import asyncio
 
 # --- Logs y TMP dirs (deben existir antes de usarlos) ---
 LOG_DIR = Path("logs")
@@ -99,57 +101,38 @@ def _ensure_hf_vlm():
 
     from transformers import AutoProcessor, AutoModelForImageTextToText
     import torch, os
+
     model_id_hub = "Qwen/Qwen2.5-VL-7B-Instruct"
-    cache_dir = VLM_CACHE_DIR  # ya definido arriba
+    cache_dir = VLM_CACHE_DIR
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    def _load_processor(local_only: bool):
-        return AutoProcessor.from_pretrained(
-            cache_dir if local_only else model_id_hub,
-            trust_remote_code=True,
+    # 1) Resolver snapshot local (sin red). Si no existe, baja al cache_dir.
+    local_repo = None
+    try:
+        local_repo = snapshot_download(
+            repo_id=model_id_hub,
             cache_dir=cache_dir,
-            local_files_only=local_only
+            local_files_only=True
+        )
+    except Exception as e:
+        print(f"[HF VLM] snapshot local no encontrado ({e}). Bajando al cache_dir …")
+        local_repo = snapshot_download(repo_id=model_id_hub, cache_dir=cache_dir, local_files_only=False)
+
+    # 2) Cargar desde el snapshot resuelto
+    if device == "cuda":
+        model = AutoModelForImageTextToText.from_pretrained(
+            local_repo, trust_remote_code=True, torch_dtype=torch.float16
+        ).to("cuda", dtype=torch.float16)
+    else:
+        model = AutoModelForImageTextToText.from_pretrained(
+            local_repo, trust_remote_code=True, torch_dtype=torch.float32
         )
 
-    def _load_model(local_only: bool):
-        if device == "cuda":
-            m = AutoModelForImageTextToText.from_pretrained(
-                cache_dir if local_only else model_id_hub,
-                torch_dtype=torch.float16,
-                device_map={"": "cpu"},          # carga a RAM primero
-                low_cpu_mem_usage=False,
-                trust_remote_code=True,
-                cache_dir=cache_dir,
-                local_files_only=local_only
-            )
-            return m.to("cuda", dtype=torch.float16)
-        else:
-            return AutoModelForImageTextToText.from_pretrained(
-                cache_dir if local_only else model_id_hub,
-                torch_dtype=torch.float32,
-                device_map=None,
-                low_cpu_mem_usage=False,
-                trust_remote_code=True,
-                cache_dir=cache_dir,
-                local_files_only=local_only
-            )
-
-    # 1) Intento 100% offline
-    try:
-        processor = _load_processor(local_only=True)
-    except Exception as e:
-        print(f"[HF VLM] Processor local no disponible ({e}). Descargando al cache_dir ...")
-        processor = _load_processor(local_only=False)
-
-    try:
-        model = _load_model(local_only=True)
-    except Exception as e:
-        print(f"[HF VLM] Modelo local no disponible ({e}). Descargando al cache_dir ...")
-        model = _load_model(local_only=False)
+    processor = AutoProcessor.from_pretrained(local_repo, trust_remote_code=True)
 
     model.eval()
     _hf_vlm.update(model=model, processor=processor, device=device)
-    print(f"[HF VLM] Loaded {cache_dir} (fallback OK) on {device}")
+    print(f"[HF VLM] Loaded {local_repo} on {device}")
     return _hf_vlm
 
 
@@ -469,7 +452,7 @@ LLAMA_ARGS = [
     "--ctx-size", "4096",
     "--n-gpu-layers", "28",    # si tu build no acepta este flag, usar --ngl
     "-t", "12",
-    "--no-mmap",           # fuerza copia completa a RAM (en vez de mmapped desde disco)
+    #"--no-mmap",           # fuerza copia completa a RAM (en vez de mmapped desde disco)
     # "--mlock",           # (opcional) intenta “fijar” en RAM; en Windows puede requerir privilegios
     # "--flash-attn"          # si usás CUDA/cuBLAS (no Vulkan)
 ]
@@ -679,8 +662,37 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     global _httpx_async_client
     _httpx_async_client = httpx.AsyncClient(timeout=None)
+
+
+    # ⇩⇩ PRELOAD LLM ANTES DEL PRIMER REQUEST ⇩⇩
+    if os.environ.get("PRELOAD_LLM", "1") == "1":
+        print("[startup] Preloading Qwen3-coder-30b …")
+        # Levanta el proceso y espera /health OK
+        await asyncio.to_thread(manager.ensure_mode, "llm")
+
+        # Warm-up mínimo para compilar kernels y llenar caches
+        try:
+            await _httpx_async_client.post(
+                f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions",
+                json={
+                    "model": "qwen3-coder-30b",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                    "temperature": 0
+                },
+                timeout=10.0
+            )
+        except Exception as e:
+            print("[startup] warm-up LLM fallo suave:", e)
+
+    # (Opcional) si querés precargar también el VLM HF (ojo VRAM)
+    if os.environ.get("PRELOAD_VLM", "1") == "1":
+        print("[startup] Preloading Qwen2.5-VL-7B-Instruct …")
+        await asyncio.to_thread(_ensure_hf_vlm)
+
     yield
     await _httpx_async_client.aclose()
+
 
 app = FastAPI(title="IA Gateway (LLM/VLM/ALM)", lifespan=lifespan)
 manager = GpuProcessManager()
