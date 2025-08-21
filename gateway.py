@@ -23,6 +23,7 @@ from faster_whisper import WhisperModel
 import uvicorn
 from huggingface_hub import snapshot_download
 import asyncio
+from fastapi.responses import StreamingResponse
 
 # --- Logs y TMP dirs (deben existir antes de usarlos) ---
 LOG_DIR = Path("logs")
@@ -912,7 +913,7 @@ from fastapi.concurrency import run_in_threadpool
 
 @app.post("/llm")
 async def llm_chat(payload: LLMChatPayload, client: httpx.AsyncClient = Depends(get_httpx_client)):
-    from fastapi.responses import StreamingResponse
+
     try:
         await run_in_threadpool(manager.ensure_mode, "llm")
     except RuntimeError as e:
@@ -1089,6 +1090,129 @@ async def alm_pipeline(
         tts_audio=audio_b64,
         tts_error=tts_error,
     )
+
+
+@app.post("/slm")
+async def slm_pipeline(
+    file: UploadFile = File(...),
+    system_prompt: Optional[str] = Form("You are a helpful assistant."),
+    tts: Optional[bool] = Form(True),
+    target_lang: Optional[str] = Form("es"),
+    client: httpx.AsyncClient = Depends(get_httpx_client)
+):
+    import json
+    from datetime import datetime
+
+    # --- Transcripción (STT) ---
+    def transcribe_audio() -> str:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename or "audio").suffix or ".wav") as tmp:
+            shutil.copyfileobj(file.file, tmp)
+            wav_path = tmp.name
+        segments, info = stt_model.transcribe(
+            wav_path,
+            language=target_lang,
+            vad_filter=True,
+            beam_size=1,
+            without_timestamps=True
+        )
+        try:
+            os.unlink(wav_path)
+        except: 
+            pass
+        return "".join(s.text for s in segments).strip()
+
+    user_text = await run_in_threadpool(transcribe_audio)
+
+    # --- Asegurar LLM arriba ---
+    try:
+        await run_in_threadpool(manager.ensure_mode, "llm")
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # --- LLM (obtenemos texto primero) ---
+    llm_payload = {
+        "model": "qwen3-coder-30b",
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text}
+        ]
+    }
+    url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
+    r = await client.post(url, json=llm_payload)
+    r.raise_for_status()
+    llm_resp = r.json()
+    answer_text = llm_resp["choices"][0]["message"]["content"]
+
+    # --- Generador SSE (texto + audio chunked) ---
+    async def sse_stream():
+        # helpers SSE
+        def sse_event(event: str, data_obj: dict | str):
+            if isinstance(data_obj, (dict, list)):
+                data = json.dumps(data_obj, ensure_ascii=False)
+            else:
+                data = str(data_obj)
+            # SSE lines must end with double newline
+            return f"event: {event}\ndata: {data}\n\n"
+
+        # Heartbeat cada 15s
+        async def heartbeat():
+            while True:
+                yield ":ping\n\n"
+                await asyncio.sleep(15)
+
+        hb_task = asyncio.create_task(asyncio.sleep(0))  # placeholder
+
+        try:
+            # enviar texto primero
+            yield sse_event("text", {
+                "stt_text": user_text,
+                "llm_text": answer_text
+            })
+
+            if tts:
+                # Generar WAV (bloque único) y cortar en trozos base64
+                wav_bytes = await run_in_threadpool(_synth_with_piper, answer_text)
+                b64 = base64.b64encode(wav_bytes).decode("ascii")
+
+                # parámetros de chunking (≈64KB por evento es razonable)
+                CHUNK = 64 * 1024
+                total = (len(b64) + CHUNK - 1) // CHUNK
+
+                # arrancar heartbeats
+                hb_task = asyncio.create_task(asyncio.to_thread(lambda: None))  # no-op
+                # (usamos un simple ping manual entre chunks)
+                for i in range(total):
+                    part = b64[i*CHUNK:(i+1)*CHUNK]
+                    last = (i == total - 1)
+                    yield sse_event("audio", {
+                        "seq": i,
+                        "last": last,
+                        "mime": "audio/wav",
+                        "data": part
+                    })
+                    # pequeño respiro (deja drenar buffers)
+                    await asyncio.sleep(0)
+
+            # fin
+            yield sse_event("done", {"ok": True, "ts": int(time.time())})
+
+        except Exception as e:
+            # error: notificar y cerrar
+            yield sse_event("error", {"message": str(e)})
+        finally:
+            try:
+                hb_task.cancel()
+            except:
+                pass
+
+    headers = {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",  # Nginx
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(sse_stream(), media_type="text/event-stream", headers=headers)
+
 
 @app.get("/health")
 def health():
