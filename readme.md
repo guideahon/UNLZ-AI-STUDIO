@@ -9,9 +9,11 @@ Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobb
 
 ## 🚀 ¿Qué expone este proyecto?
 
-- **/llm** – texto↔texto con **llama.cpp** (Qwen3-Coder-30B, GGUF)  
+- **/llm** – texto↔texto con **llama.cpp** (Qwen3-Coder-30B, GGUF)
+- **/clm** – texto↔texto con **Qwen2.5-VL-7B** en local (HF Transformers, más rápido para prototipos) 
 - **/vlm** – imagen+prompt con **Qwen2.5-VL-7B** vía **LMDeploy**  
 - **/alm** – audio→texto (**STT**) → LLM → texto→voz (**TTS**)
+- **/slm** – igual a **/alm**, pero devuelve en **streaming SSE**: primero el texto y luego chunks de audio WAV base64
 
 ➡️ **Auto-switch**: el gateway levanta/para `llama-server` o `lmdeploy` para no pelear VRAM en una sola GPU.
 
@@ -112,6 +114,173 @@ python .\gateway.py
 - **/alm** → corre **STT** (GPU por defecto), luego **/llm**, y **TTS** con Piper (devuelve WAV en **data:base64**)
 
 ---
+
+---
+
+## 🧪 Ejemplos de uso
+
+### 1. Health
+```powershell
+Invoke-RestMethod "http://localhost:8000/health"
+```
+
+---
+
+### 2. LLM (texto con llama.cpp)
+```powershell
+$body = @{
+  model = "qwen3-coder-30b"
+  messages = @(
+    @{ role="system"; content="You are a helpful coding assistant." },
+    @{ role="user";   content="Explicá PID con pseudocódigo." }
+  )
+} | ConvertTo-Json -Depth 5
+
+Invoke-WebRequest "http://localhost:8000/llm" -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
+Select-Object -ExpandProperty Content
+```
+
+---
+
+### 3. CLM (chat liviano HF Transformers, sin `llama-server`)
+```powershell
+$body = @{
+  model = "qwen2.5-vl-7b"
+  messages = @(
+    @{ role="system"; content="Respondé breve y claro." },
+    @{ role="user";   content="Dame 3 ideas de TPs para Mecatrónica con Arduino." }
+  )
+} | ConvertTo-Json -Depth 5
+
+Invoke-WebRequest "http://localhost:8000/clm" -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
+Select-Object -ExpandProperty Content
+```
+
+---
+
+### 4. VLM (imagen + texto estilo OpenAI)
+```powershell
+$imageUrl = "https://live.staticflickr.com/65535/54703830763_71e4af50f4_k.jpg"
+
+$body = @{
+  model = "qwen2.5-vl-7b"
+  messages = @(
+    @{ role="system"; content="Respondé breve en español." },
+    @{
+      role    = "user"
+      content = @(
+        @{ type="text";      text="¿Qué dice esta placa?" },
+        @{ type="image_url"; image_url=@{ url=$imageUrl } }
+      )
+    }
+  )
+} | ConvertTo-Json -Depth 8
+
+Invoke-WebRequest "http://localhost:8000/vlm" -Method Post `
+  -ContentType "application/json; charset=utf-8" `
+  -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
+Select-Object -ExpandProperty Content
+```
+
+---
+
+### 5. ALM (Audio → Texto → LLM → Voz completa)
+```powershell
+Invoke-RestMethod "http://localhost:8000/alm" -Method Post -Form @{
+  file          = Get-Item "test.wav"
+  system_prompt = "Sos un asistente de mecatrónica que responde claro."
+  tts           = "true"
+  target_lang   = "es"
+}
+```
+
+Respuesta JSON:
+```json
+{
+  "stt_text": "hola como estas",
+  "llm_text": "Estoy bien, gracias.",
+  "tts_audio": "data:audio/wav;base64,UklGRjQAAABXQVZFZm10..."
+}
+```
+
+---
+
+### 6. SLM (Audio → Texto → LLM → **stream de texto+audio**)
+
+**PowerShell**:
+```powershell
+$in = "test.wav"
+$mp = @{
+  file          = Get-Item $in
+  system_prompt = "Sos un asistente que responde en español."
+  tts           = "true"
+  target_lang   = "es"
+}
+
+curl -N -X POST http://localhost:8000/slm -F "file=@$in" -F "system_prompt=Sos un asistente." -F "tts=true" -F "target_lang=es"
+```
+
+**Respuesta SSE** (recortada):
+```
+event: text
+data: {"stt_text":"hola mundo","llm_text":"¡Hola! ¿Cómo estás?"}
+
+event: audio
+data: {"seq":0,"last":false,"mime":"audio/wav","data":"UklGRjQAAABXQVZF..."}
+
+event: audio
+data: {"seq":1,"last":true,"mime":"audio/wav","data":"AAA...=="}
+
+event: done
+data: {"ok":true,"ts":1692483021}
+```
+
+👉 Con esto podés ir reproduciendo audio en vivo en un cliente.
+
+---
+
+## 💡 Tips para clientes
+
+### Python (requests SSE)
+```python
+import requests, json
+
+with requests.post("http://localhost:8000/slm",
+                   files={"file": open("test.wav","rb")},
+                   data={"system_prompt":"Explicá simple","tts":"true","target_lang":"es"},
+                   stream=True) as r:
+    for line in r.iter_lines(decode_unicode=True):
+        if line and not line.startswith(":"):
+            if line.startswith("event:"):
+                evt = line.split(":",1)[1].strip()
+            elif line.startswith("data:"):
+                data = line.split(":",1)[1].strip()
+                print("EVENT", evt, "DATA", data[:80])
+```
+
+### ESP32/ESP32-CAM
+- Mandá WAV/PCM corto grabado con `I2S` como `multipart/form-data` a `/alm` (respuesta completa).  
+- O a `/slm` para streaming y reproducí chunks de audio decodificados en I2S DAC.  
+- Usar librerías:  
+  - `WiFiClientSecure` + `HTTPClient` en Arduino Core  
+  - `esp_http_client` en ESP-IDF  
+
+---
+
+## 📂 Resumen endpoints
+
+| Endpoint | Tipo | Función |
+|----------|------|---------|
+| **/health** | GET | Estado del gateway y proceso actual |
+| **/llm** | POST (JSON) | Chat LLM (Qwen3-Coder-30B, llama.cpp) |
+| **/clm** | POST (JSON) | Chat rápido en local con HF Transformers |
+| **/vlm** | POST (JSON) | Texto+Imagen → Respuesta (Qwen2.5-VL-7B) |
+| **/alm** | POST (FormData) | Audio WAV → STT → LLM → (opcional TTS en base64) |
+| **/slm** | POST (FormData, SSE) | Igual a ALM pero en **streaming** (eventos `text`, `audio`, `done`) |
 
 ## 🧪 Ejemplos (PowerShell)
 
