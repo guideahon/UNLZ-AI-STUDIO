@@ -115,7 +115,6 @@ python .\gateway.py
 
 ---
 
----
 
 ## 🧪 Ejemplos de uso
 
@@ -267,128 +266,111 @@ with requests.post("http://localhost:8000/slm",
 - O a `/slm` para streaming y reproducí chunks de audio decodificados en I2S DAC.  
 - Usar librerías:  
   - `WiFiClientSecure` + `HTTPClient` en Arduino Core  
-  - `esp_http_client` en ESP-IDF  
-
----
-
-## 📂 Resumen endpoints
-
-| Endpoint | Tipo | Función |
-|----------|------|---------|
-| **/health** | GET | Estado del gateway y proceso actual |
-| **/llm** | POST (JSON) | Chat LLM (Qwen3-Coder-30B, llama.cpp) |
-| **/clm** | POST (JSON) | Chat rápido en local con HF Transformers |
-| **/vlm** | POST (JSON) | Texto+Imagen → Respuesta (Qwen2.5-VL-7B) |
-| **/alm** | POST (FormData) | Audio WAV → STT → LLM → (opcional TTS en base64) |
-| **/slm** | POST (FormData, SSE) | Igual a ALM pero en **streaming** (eventos `text`, `audio`, `done`) |
-
-## 🧪 Ejemplos (PowerShell)
-
-
-### LLM (código)
-```powershell
-# 1) Health (opcional)
-Invoke-RestMethod "http://localhost:8000/health"
-
-# 2) Body JSON
-$body = @{
-  model = "qwen3-coder-30b"
-  messages = @(
-    @{ role="system"; content="You are a helpful coding assistant." },
-    @{ role="user";   content="Explicá PID con pseudocódigo." }
-  )
-} | ConvertTo-Json -Depth 5
-
-# 3) Enviar (UTF-8) y ver la respuesta completa (raw JSON)
-$raw = Invoke-WebRequest -Uri "http://localhost:8000/llm" `
-  -Method Post `
-  -ContentType "application/json; charset=utf-8" `
-  -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
-| Select-Object -ExpandProperty Content
-$resp = $raw | ConvertFrom-Json
-$msg  = $resp.choices[0].message
-if ($msg.content -is [array]) {
-  ($msg.content | ForEach-Object { $_.text }) -join "`n"
-} else {
-  $msg.content
-}
-
-
-```
-
-### CLM (rápido, chat de texto)
-```powershell
-# 1) Health (opcional)
-Invoke-RestMethod "http://localhost:8000/health"
-
-# 2) Body JSON (mismo schema que /llm)
-$body = @{
-  model = "qwen2.5-vl-7b"   # opcional, se ignora internamente, pero lo dejamos documentado
-  temperature = 0.3
-  max_tokens  = 512
-  top_p       = 0.9
-  messages = @(
-    @{ role="system"; content="Respondé breve y claro. Si hay código, usá bloques Markdown." },
-    @{ role="user";   content="Dame 3 ideas de TPs para Mecatrónica con Arduino y visión." }
-  )
-} | ConvertTo-Json -Depth 5
-
-# 3) Enviar (UTF-8) y ver la respuesta (raw JSON y texto)
-$raw = Invoke-WebRequest -Uri "http://localhost:8000/clm" `
-  -Method Post `
-  -ContentType "application/json; charset=utf-8" `
-  -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
-| Select-Object -ExpandProperty Content
-$raw
-
-# Extraer texto (por compatibilidad si algún backend devuelve array de partes)
-$resp = $raw | ConvertFrom-Json
-$msg  = $resp.choices[0].message
-if ($msg.content -is [array]) {
-  ($msg.content | ForEach-Object { $_.text }) -join "`n"
-} else {
-  $msg.content
-}
-
-
-```
-
-
-### VLM (visión, estilo OpenAI)
-```powershell
-# Valid thumbnail URL
-$imageUrl = "https://live.staticflickr.com/65535/54703830763_71e4af50f4_k.jpg"
-
-$body = @{
-  model = "qwen2.5-vl-7b"
-  messages = @(
-    @{ role="system"; content="Respondé breve y claro en el mismo idioma que te preguntaron." },
-    @{
-      role    = "user"
-      content = @(
-        @{ type = "text";      text = "¿Qué dice esta placa y qué falla ves?" },
-        @{ type = "image_url"; image_url = @{ url = $imageUrl } }
-      )
     }
-  )
-} | ConvertTo-Json -Depth 8
-
-$raw = Invoke-WebRequest -Uri "http://localhost:8000/vlm" `
-  -Method Post `
-  -ContentType "application/json; charset=utf-8" `
-  -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
 | Select-Object -ExpandProperty Content
-$raw
-
 $resp = $raw | ConvertFrom-Json
-$msg  = $resp.choices[0].message
-if ($msg.content -is [array]) {
   ($msg.content | ForEach-Object { $_.text }) -join "`n"
-} else {
-  $msg.content
+
+  ### 1. Health
+  ```powershell
+  Invoke-RestMethod "http://localhost:8000/health"
+  ```
+
+  ### 2. LLM (texto con llama.cpp)
+  ```powershell
+  $body = @{
+    model = "qwen3-coder-30b"
+    messages = @(
+      @{ role="system"; content="You are a helpful coding assistant." },
+      @{ role="user";   content="Explicá PID con pseudocódigo." }
+    )
+  } | ConvertTo-Json -Depth 5
+
+  Invoke-WebRequest "http://localhost:8000/llm" -Method Post `
+    -ContentType "application/json; charset=utf-8" `
+    -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
+  Select-Object -ExpandProperty Content
+  ```
+
+  ### 3. CLM (chat liviano HF Transformers, sin `llama-server`)
+  ```powershell
+  $body = @{
+    model = "qwen2.5-vl-7b"
+    messages = @(
+      @{ role="system"; content="Respondé breve y claro." },
+      @{ role="user";   content="Dame 3 ideas de TPs para Mecatrónica con Arduino." }
+    )
+  } | ConvertTo-Json -Depth 5
+
+  Invoke-WebRequest "http://localhost:8000/clm" -Method Post `
+    -ContentType "application/json; charset=utf-8" `
+    -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
+  Select-Object -ExpandProperty Content
+  ```
+
+  ### 4. VLM (imagen + texto estilo OpenAI)
+  ```powershell
+  $imageUrl = "https://live.staticflickr.com/65535/54703830763_71e4af50f4_k.jpg"
+
+  $body = @{
+    model = "qwen2.5-vl-7b"
+    messages = @(
+      @{ role="system"; content="Respondé breve en español." },
+      @{
+        role    = "user"
+        content = @(
+          @{ type="text";      text="¿Qué dice esta placa?" },
+          @{ type="image_url"; image_url=@{ url=$imageUrl } }
+        )
+      }
+    )
+  } | ConvertTo-Json -Depth 8
+
+  Invoke-WebRequest "http://localhost:8000/vlm" -Method Post `
+    -ContentType "application/json; charset=utf-8" `
+    -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
+  Select-Object -ExpandProperty Content
+  ```
+
+  ### 5. ALM (Audio → Texto → LLM → Voz completa)
+  ```powershell
+  Invoke-RestMethod "http://localhost:8000/alm" -Method Post -Form @{
+    file          = Get-Item "test.wav"
+    system_prompt = "Sos un asistente de mecatrónica que responde claro."
+    tts           = "true"
+    target_lang   = "es"
+  }
+  ```
+
+  Respuesta JSON:
+  ```json
+  {
+    "stt_text": "hola como estas",
+    "llm_text": "Estoy bien, gracias.",
+    "tts_audio": "data:audio/wav;base64,UklGRjQAAABXQVZFZm10..."
+  }
+  ```
+
+  ### 6. SLM (Audio → Texto → LLM → **stream de texto+audio**)
+  ```powershell
+  $in = "test.wav"
+  curl -N -X POST http://localhost:8000/slm -F "file=@$in" -F "system_prompt=Sos un asistente." -F "tts=true" -F "target_lang=es"
+  ```
+
+  **Respuesta SSE** (recortada):
+  ```
+  event: text
+  data: {"stt_text":"hola mundo","llm_text":"¡Hola! ¿Cómo estás?"}
+
 }
+  data: {"seq":0,"last":false,"mime":"audio/wav","data":"UklGRjQAAABXQVZF..."}
+
+
+  data: {"seq":1,"last":true,"mime":"audio/wav","data":"AAA...=="}
 
 ```
+  data: {"ok":true,"ts":1692483021}
+  ```
 
 ### ALM (audio completo) IMPORTANTE, CORRER EL COMANDO CON LA TERMINAL ABIERTA EN LA MISMA RUTA DE gateway.py POWERSHELL 5
 
