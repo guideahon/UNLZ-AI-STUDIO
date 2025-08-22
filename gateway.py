@@ -1,3 +1,5 @@
+import logging
+import requests
 
 PRINT_CHILD_LOGS = False  # Avoid accidental spam from child processes
 
@@ -53,7 +55,6 @@ VLM_ARGS = [
 ]
 
 # --- VLM HuggingFace backend imports ---
-import requests
 from io import BytesIO
 from PIL import Image
 import traceback
@@ -566,11 +567,14 @@ except Exception as e:
 
 # STT (usar CUDA o CPU)
 
+
 # Use CUDA for STT if VRAM is available for faster inference
 USE_CUDA_FOR_STT = True
 STT_MODEL_SIZE   = "medium"
-STT_DEVICE       = "cuda"
-STT_COMPUTE_TYPE = "float16"
+# Permitir override por variable de entorno
+import os
+STT_DEVICE = os.getenv("STT_DEVICE", "cuda" if USE_CUDA_FOR_STT else "cpu")
+STT_COMPUTE_TYPE = "float16" if STT_DEVICE == "cuda" else "int8"
 
 
 
@@ -578,7 +582,7 @@ STT_COMPUTE_TYPE = "float16"
 # MANAGER DE PROCESOS GPU
 # =========================
 
-import socket, json, time, requests
+import socket, json, time
 
 def _wait_port_open(host: str, port: int, timeout: float) -> bool:
     deadline = time.time() + timeout
@@ -595,80 +599,6 @@ def _wait_port_open(host: str, port: int, timeout: float) -> bool:
 import threading
 
 class GpuProcessManager:
-    def ensure_piper(self, deadline_sec: int = 180):
-        """Levanta Piper HTTP server y espera que quede listo."""
-        with self._lock:
-            # Si ya corre, salir
-            if hasattr(self, "piper_proc") and self.piper_proc and self.piper_proc.poll() is None:
-                return
-
-            # Matar restos
-            if hasattr(self, "piper_proc") and self.piper_proc:
-                try: self.piper_proc.terminate()
-                except: pass
-
-            log_path = LOG_DIR / "piper-server.log"
-            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-
-            # Algunas instalaciones tienen 'piper_server.exe' aparte:
-            exe = PIPER_EXE
-            if os.path.isfile(os.path.join(os.path.dirname(PIPER_EXE), "piper_server.exe")):
-                exe = os.path.join(os.path.dirname(PIPER_EXE), "piper_server.exe")
-
-            cmd = [exe, "--server", f"--host=127.0.0.1", f"--port={PIPER_PORT}", "-m", PIPER_VOICE]
-            self.piper_proc = _spawn_with_tee(cmd, log_path, creationflags=flags)
-
-            host = "127.0.0.1"; port = PIPER_PORT
-
-            # 1) Esperar a que el puerto esté escuchando
-            if not _wait_port_open(host, port, timeout=min(30, deadline_sec)):
-                # Extra: si el proceso murió, mostrar log
-                if self.piper_proc.poll() is not None:
-                    try:
-                        tail = (log_path.read_text(encoding="utf-8", errors="ignore")).splitlines()[-50:]
-                    except Exception:
-                        tail = ["<no log>"]
-                    raise RuntimeError("Piper server process exited temprano.\n" + "\n".join(tail))
-                raise RuntimeError("Piper no abrió el puerto a tiempo.")
-
-            # 2) Health check barato (no TTS)
-            base = f"http://{host}:{port}"
-            ok = False
-            deadline = time.time() + deadline_sec
-            s = requests.Session()
-            while time.time() < deadline:
-                if self.piper_proc.poll() is not None:
-                    try:
-                        tail = (log_path.read_text(encoding="utf-8", errors="ignore")).splitlines()[-50:]
-                    except Exception:
-                        tail = ["<no log>"]
-                    raise RuntimeError("Piper server process exited temprano.\n" + "\n".join(tail))
-                try:
-                    r = s.get(base + "/", timeout=2)  # muchas builds devuelven 200 en /
-                    if r.status_code < 500:
-                        ok = True
-                        break
-                except Exception:
-                    pass
-                time.sleep(0.5)
-
-            if not ok:
-                try:
-                    tail = (log_path.read_text(encoding="utf-8", errors="ignore")).splitlines()[-50:]
-                except Exception:
-                    tail = ["<no log>"]
-                raise RuntimeError("Piper server no respondió al health check.\n" + "\n".join(tail))
-
-            # 3) Warmup muy corto (opcional, fuera del health)
-            try:
-                r = s.post(base + "/api/tts",
-                           data=json.dumps({"text": "hola"}),
-                           headers={"Content-Type": "application/json"},
-                           timeout=(3, 30))
-                _ = r.content  # forzar lectura
-            except Exception as e:
-                # No abortar el arranque por warmup; solo loguear
-                print("[piper] warmup falló suavemente:", e)
 
 
     def __init__(self):
@@ -747,9 +677,7 @@ class GpuProcessManager:
                     env["PYTORCH_TRITON_DISABLE"] = "1"
                     env["TORCHINDUCTOR_FX_ENABLE"] = "0"
                     env["TORCHINDUCTOR_DISABLE"] = "1"
-                    # Add Triton stub so 'import triton' succeeds
-                    stub_root = _ensure_triton_stub()
-                    env["PYTHONPATH"] = stub_root + (os.pathsep + env.get("PYTHONPATH",""))
+                    # (triton stub omitted; see bugfix)
 
                     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                     self.proc = _spawn_with_tee(LMDEPLOY_CMD + VLM_ARGS, log_path, env=env, creationflags=flags)
@@ -807,10 +735,32 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+    # ---- Banner DESPUÉS de los logs de Uvicorn ----
+    async def _banner_after_uvicorn():
+        # pequeño delay para quedar luego de:
+        # "Application startup complete." y "Uvicorn running on ..."
+        await asyncio.sleep(0.3)
+        host_bind = os.getenv("HOST_BIND", "0.0.0.0")
+        port_bind = int(os.getenv("PORT_BIND", "8000"))
+        url_mostrable = (
+            f"http://localhost:{port_bind}"
+            if host_bind in ("0.0.0.0", "127.0.0.1")
+            else f"http://{host_bind}:{port_bind}"
+        )
+        # usar el logger 'uvicorn.error' para que respete el formato "INFO:     ..."
+        logging.getLogger("uvicorn.error").info(
+            "Servidor levantado, ya puede usar los endpoints en %s  "
+            "(/health, /llm, /clm, /vlm, /alm, /slm)",
+            url_mostrable,
+        )
+
+    asyncio.create_task(_banner_after_uvicorn())
     global _httpx_async_client
+
     limits = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=60)
     _httpx_async_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(None),
+        timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=None),
         limits=limits,
         http2=False  # uvicorn doesn’t speak h2 by default; avoid negotiation overhead
     )
@@ -908,34 +858,27 @@ class LLMChatPayload(BaseModel):
     max_tokens: int = 512
     top_p: float = 0.9
 
+
 from fastapi.concurrency import run_in_threadpool
+from fastapi import Request, Query
+
 
 
 @app.post("/llm")
-async def llm_chat(payload: LLMChatPayload, client: httpx.AsyncClient = Depends(get_httpx_client)):
-
+async def llm_chat(
+    payload: LLMChatPayload,
+    request: Request,
+    stream: bool = Query(False),
+    client: httpx.AsyncClient = Depends(get_httpx_client),
+):
     try:
         await run_in_threadpool(manager.ensure_mode, "llm")
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
 
-    # Check for OpenAI-style streaming
-    stream = False
-    if hasattr(payload, 'stream') and getattr(payload, 'stream', False):
-        stream = True
-    elif isinstance(payload, dict) and payload.get('stream'):
-        stream = True
-    # Accept ?stream=true from query params as well
-    import inspect
-    frame = inspect.currentframe()
-    if frame and 'request' in frame.f_back.f_locals:
-        req = frame.f_back.f_locals['request']
-        if req and req.query_params.get('stream') == 'true':
-            stream = True
-
-    if stream:
-        # Proxy chunked response from llama-server
+    # Robust streaming detection: explicit query param or ?stream=true
+    if stream or request.query_params.get("stream") == "true":
         def iter_llama():
             with httpx.stream("POST", url, json=payload.model_dump(), timeout=None) as r:
                 r.raise_for_status()
@@ -1035,7 +978,8 @@ async def alm_pipeline(
     client: httpx.AsyncClient = Depends(get_httpx_client)
 ):
 
-    def transcribe_and_llm():
+
+    def transcribe_audio():
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename or "audio").suffix or ".wav") as tmp:
             shutil.copyfileobj(file.file, tmp)
             wav_path = tmp.name
@@ -1052,7 +996,7 @@ async def alm_pipeline(
         os.unlink(wav_path)
         return user_text
 
-    user_text = await run_in_threadpool(transcribe_and_llm)
+    user_text = await run_in_threadpool(transcribe_audio)
 
     try:
         await run_in_threadpool(manager.ensure_mode, "llm")
@@ -1139,6 +1083,24 @@ async def slm_pipeline(
         ]
     }
     url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
+        # ---- Banner DESPUÉS de los logs de Uvicorn ----
+    async def _banner_after_uvicorn():
+        # pequeño delay para quedar luego de:
+        # "Application startup complete." y "Uvicorn running on ..."
+        await asyncio.sleep(0.5)
+        host_bind = os.getenv("HOST_BIND", "0.0.0.0")
+        port_bind = int(os.getenv("PORT_BIND", "8000"))
+        url_mostrable = (
+            f"http://localhost:{port_bind}"
+            if host_bind in ("0.0.0.0", "127.0.0.1")
+            else f"http://{host_bind}:{port_bind}"
+        )
+        logging.getLogger("uvicorn.error").info(
+            "Servidor levantado, ya puede usar los endpoints en %s  "
+            "(/health, /llm, /clm, /vlm, /alm, /slm)",
+            url_mostrable,
+        )
+    asyncio.create_task(_banner_after_uvicorn())
     r = await client.post(url, json=llm_payload)
     r.raise_for_status()
     llm_resp = r.json()
@@ -1155,13 +1117,7 @@ async def slm_pipeline(
             # SSE lines must end with double newline
             return f"event: {event}\ndata: {data}\n\n"
 
-        # Heartbeat cada 15s
-        async def heartbeat():
-            while True:
-                yield ":ping\n\n"
-                await asyncio.sleep(15)
 
-        hb_task = asyncio.create_task(asyncio.sleep(0))  # placeholder
 
         try:
             # enviar texto primero
@@ -1170,29 +1126,43 @@ async def slm_pipeline(
                 "llm_text": answer_text
             })
 
+
             if tts:
-                # Generar WAV (bloque único) y cortar en trozos base64
-                wav_bytes = await run_in_threadpool(_synth_with_piper, answer_text)
-                b64 = base64.b64encode(wav_bytes).decode("ascii")
+                # Generar WAV y streammearlo como base64 incremental
+                import tempfile
+                import base64
+                # Synthesize and write to a temp file for chunked reading
+                def synth_to_file(text):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                        wav_bytes = _synth_with_piper(text)
+                        tmp.write(wav_bytes)
+                        return tmp.name
 
-                # parámetros de chunking (≈64KB por evento es razonable)
+                wav_path = await run_in_threadpool(synth_to_file, answer_text)
                 CHUNK = 64 * 1024
-                total = (len(b64) + CHUNK - 1) // CHUNK
-
-                # arrancar heartbeats
-                hb_task = asyncio.create_task(asyncio.to_thread(lambda: None))  # no-op
-                # (usamos un simple ping manual entre chunks)
-                for i in range(total):
-                    part = b64[i*CHUNK:(i+1)*CHUNK]
-                    last = (i == total - 1)
-                    yield sse_event("audio", {
-                        "seq": i,
-                        "last": last,
-                        "mime": "audio/wav",
-                        "data": part
-                    })
-                    # pequeño respiro (deja drenar buffers)
-                    await asyncio.sleep(0)
+                seq = 0
+                try:
+                    with open(wav_path, "rb") as f:
+                        encoder = base64.b64encode
+                        while True:
+                            chunk = f.read(CHUNK)
+                            if not chunk:
+                                break
+                            b64 = encoder(chunk).decode("ascii")
+                            last = f.tell() == os.fstat(f.fileno()).st_size
+                            yield sse_event("audio", {
+                                "seq": seq,
+                                "last": last,
+                                "mime": "audio/wav",
+                                "data": b64
+                            })
+                            seq += 1
+                            await asyncio.sleep(0)
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except Exception:
+                        pass
 
             # fin
             yield sse_event("done", {"ok": True, "ts": int(time.time())})
@@ -1200,11 +1170,6 @@ async def slm_pipeline(
         except Exception as e:
             # error: notificar y cerrar
             yield sse_event("error", {"message": str(e)})
-        finally:
-            try:
-                hb_task.cancel()
-            except:
-                pass
 
     headers = {
         "Cache-Control": "no-cache, no-transform",
@@ -1220,10 +1185,12 @@ def health():
 
 if __name__ == "__main__":
     try:
+        host = os.getenv("HOST_BIND", "0.0.0.0")
+        port = int(os.getenv("PORT_BIND", "8000"))
         uvicorn.run(
             app,
-            host="0.0.0.0",
-            port=8000,
+            host=host,
+            port=port,
             reload=False,
             log_level="info",  # less logging = less overhead
             backlog=2048,         # smoother under bursts
