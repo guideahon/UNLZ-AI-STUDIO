@@ -1,6 +1,6 @@
 ![Logo Institucional](https://github.com/JonatanBogadoUNLZ/PPS-Jonatan-Bogado/blob/9952aac097aca83a1aadfc26679fc7ec57369d82/LOGO%20AZUL%20HORIZONTAL%20-%20fondo%20transparente.png)
 
-# Universidad Nacional de Lomas de Zamora – Facultad de Ingeniería  
+# Universidad Nacional de Lomas de Zamora – Facultad de Ingeniería
 ## UNLZ-AI-STUDIO
 
 Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobbistas.
@@ -10,8 +10,8 @@ Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobb
 ## 🚀 ¿Qué expone este proyecto?
 
 - **/llm** – texto↔texto con **llama.cpp** (Qwen3-Coder-30B, GGUF)
-- **/clm** – texto↔texto con **Qwen2.5-VL-7B** en local (HF Transformers, más rápido para prototipos) 
-- **/vlm** – imagen+prompt con **Qwen2.5-VL-7B** vía **LMDeploy**  
+- **/clm** – texto↔texto con **Qwen2.5-VL-7B** en local (HF Transformers, más rápido para prototipos)
+- **/vlm** – imagen+prompt con **Qwen2.5-VL-7B** vía **LMDeploy**
 - **/alm** – audio→texto (**STT**) → LLM → texto→voz (**TTS**)
 - **/slm** – igual a **/alm**, pero devuelve en **streaming SSE**: primero el texto y luego chunks de audio WAV base64
 
@@ -21,7 +21,7 @@ Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobb
 
 ## 🧩 Requisitos PREVIOS
 
-- Windows 10/11 con PowerShell  
+- Windows 10/11 con PowerShell
 - Python 3.10+ (64-bit) https://www.python.org/downloads/
 - Conexión a internet para descargar modelos
 - CUDA Toolkit https://developer.nvidia.com/cuda-toolkit
@@ -48,25 +48,24 @@ hf download Qwen/Qwen2.5-VL-7B-Instruct `
 hf download rhasspy/piper-voices `
   --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx*" `
   --local-dir "C:\piper\voices\es_AR\daniela_high"
+```
 
 > Tip: si preferís sin backticks, ejecutá cada `hf download` en **una sola línea**.
 
-🔊 Instalar Piper (TTS) desde GitHub — recomendado en Windows
+🔊 **Instalar Piper (TTS) desde GitHub — recomendado en Windows**
 
-El wrapper de pip install piper-tts puede fallar en Windows. Usá el binario nativo.
+El wrapper de `pip install piper-tts` puede fallar en Windows. Usá el binario nativo.
 
-Abrí Releases: https://github.com/rhasspy/piper/releases
+1. Abrí Releases: https://github.com/rhasspy/piper/releases
+2. Descargá el asset `piper_windows_amd64.zip` de la versión más reciente.
+3. Creá la carpeta y descomprimí directo ahí:
 
-Descargá el asset piper_windows_amd64.zip de la versión más reciente.
-
-Creá la carpeta y descomprimí directo ahí:
-
+```powershell
 New-Item -ItemType Directory -Force -Path "C:\piper" | Out-Null
 $zip = "$env:TEMP\piper_windows_amd64.zip"
 Invoke-WebRequest "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip" -OutFile $zip
 Expand-Archive $zip -DestinationPath "C:\piper" -Force
 Remove-Item $zip
-
 ```
 
 ### 2) Dependencias
@@ -88,16 +87,16 @@ pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision
 pip install -U huggingface_hub
 
 # Necesario para llamar a qwen_vl
-pip install -U transformers accelerate pillow requests #qwen_vl_utils NO SE ESTÁ USANDO
+pip install -U transformers accelerate pillow requests
 
-#TurboMind offline mode
+# TurboMind offline mode
 lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
   --dst-path "C:\models\qwen2.5-vl-7b-tm"
 ```
 
 **Rutas esperadas por el gateway:**
-- **GGUF:** `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf`  
-- **VLM:**  `C:\models\qwen2.5-vl-7b-hf`  
+- **GGUF:** `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf`
+- **VLM:**  `C:\models\qwen2.5-vl-7b-hf`
 - **Piper:** `C:\piper\voices\es_AR\daniela_high\...`
 
 ---
@@ -106,15 +105,15 @@ lmdeploy convert hf Qwen/Qwen2.5-VL-7B-Instruct `
 
 ```powershell
 python .\gateway.py
-
 ```
 
-- **/llm** → proxyea a **llama-server** (si no está, lo levanta y apaga `lmdeploy`)  
-- **/vlm** → proxyea a **LMDeploy** (si no está, lo levanta y apaga `llama-server`)  
+- **/llm** → proxyea a **llama-server** (si no está, lo levanta y apaga `lmdeploy`)
+- **/clm** → chat liviano con **Qwen2.5-VL-7B** (Transformers, sin servidor externo)
+- **/vlm** → proxyea a **LMDeploy** (si no está, lo levanta y apaga `llama-server`)
 - **/alm** → corre **STT** (GPU por defecto), luego **/llm**, y **TTS** con Piper (devuelve WAV en **data:base64**)
+- **/slm** → igual a **/alm**, pero responde en streaming SSE (texto y audio por partes)
 
 ---
-
 
 ## 🧪 Ejemplos de uso
 
@@ -122,8 +121,6 @@ python .\gateway.py
 ```powershell
 Invoke-RestMethod "http://localhost:8000/health"
 ```
-
----
 
 ### 2. LLM (texto con llama.cpp)
 ```powershell
@@ -141,8 +138,6 @@ Invoke-WebRequest "http://localhost:8000/llm" -Method Post `
 Select-Object -ExpandProperty Content
 ```
 
----
-
 ### 3. CLM (chat liviano HF Transformers, sin `llama-server`)
 ```powershell
 $body = @{
@@ -158,8 +153,6 @@ Invoke-WebRequest "http://localhost:8000/clm" -Method Post `
   -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
 Select-Object -ExpandProperty Content
 ```
-
----
 
 ### 4. VLM (imagen + texto estilo OpenAI)
 ```powershell
@@ -185,8 +178,6 @@ Invoke-WebRequest "http://localhost:8000/vlm" -Method Post `
 Select-Object -ExpandProperty Content
 ```
 
----
-
 ### 5. ALM (Audio → Texto → LLM → Voz completa)
 ```powershell
 Invoke-RestMethod "http://localhost:8000/alm" -Method Post -Form @{
@@ -206,20 +197,9 @@ Respuesta JSON:
 }
 ```
 
----
-
 ### 6. SLM (Audio → Texto → LLM → **stream de texto+audio**)
-
-**PowerShell**:
 ```powershell
 $in = "test.wav"
-$mp = @{
-  file          = Get-Item $in
-  system_prompt = "Sos un asistente que responde en español."
-  tts           = "true"
-  target_lang   = "es"
-}
-
 curl -N -X POST http://localhost:8000/slm -F "file=@$in" -F "system_prompt=Sos un asistente." -F "tts=true" -F "target_lang=es"
 ```
 
@@ -262,120 +242,15 @@ with requests.post("http://localhost:8000/slm",
 ```
 
 ### ESP32/ESP32-CAM
-- Mandá WAV/PCM corto grabado con `I2S` como `multipart/form-data` a `/alm` (respuesta completa).  
-- O a `/slm` para streaming y reproducí chunks de audio decodificados en I2S DAC.  
-- Usar librerías:  
-  - `WiFiClientSecure` + `HTTPClient` en Arduino Core  
-    }
-| Select-Object -ExpandProperty Content
-$resp = $raw | ConvertFrom-Json
-  ($msg.content | ForEach-Object { $_.text }) -join "`n"
+- O a `/slm` para streaming y reproducí chunks de audio decodificados en I2S DAC.
+- Usar librerías:
+  - `WiFiClientSecure` + `HTTPClient` en Arduino Core
 
-  ### 1. Health
-  ```powershell
-  Invoke-RestMethod "http://localhost:8000/health"
-  ```
+---
 
-  ### 2. LLM (texto con llama.cpp)
-  ```powershell
-  $body = @{
-    model = "qwen3-coder-30b"
-    messages = @(
-      @{ role="system"; content="You are a helpful coding assistant." },
-      @{ role="user";   content="Explicá PID con pseudocódigo." }
-    )
-  } | ConvertTo-Json -Depth 5
-
-  Invoke-WebRequest "http://localhost:8000/llm" -Method Post `
-    -ContentType "application/json; charset=utf-8" `
-    -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
-  Select-Object -ExpandProperty Content
-  ```
-
-  ### 3. CLM (chat liviano HF Transformers, sin `llama-server`)
-  ```powershell
-  $body = @{
-    model = "qwen2.5-vl-7b"
-    messages = @(
-      @{ role="system"; content="Respondé breve y claro." },
-      @{ role="user";   content="Dame 3 ideas de TPs para Mecatrónica con Arduino." }
-    )
-  } | ConvertTo-Json -Depth 5
-
-  Invoke-WebRequest "http://localhost:8000/clm" -Method Post `
-    -ContentType "application/json; charset=utf-8" `
-    -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
-  Select-Object -ExpandProperty Content
-  ```
-
-  ### 4. VLM (imagen + texto estilo OpenAI)
-  ```powershell
-  $imageUrl = "https://live.staticflickr.com/65535/54703830763_71e4af50f4_k.jpg"
-
-  $body = @{
-    model = "qwen2.5-vl-7b"
-    messages = @(
-      @{ role="system"; content="Respondé breve en español." },
-      @{
-        role    = "user"
-        content = @(
-          @{ type="text";      text="¿Qué dice esta placa?" },
-          @{ type="image_url"; image_url=@{ url=$imageUrl } }
-        )
-      }
-    )
-  } | ConvertTo-Json -Depth 8
-
-  Invoke-WebRequest "http://localhost:8000/vlm" -Method Post `
-    -ContentType "application/json; charset=utf-8" `
-    -Body ([Text.Encoding]::UTF8.GetBytes($body)) |
-  Select-Object -ExpandProperty Content
-  ```
-
-  ### 5. ALM (Audio → Texto → LLM → Voz completa)
-  ```powershell
-  Invoke-RestMethod "http://localhost:8000/alm" -Method Post -Form @{
-    file          = Get-Item "test.wav"
-    system_prompt = "Sos un asistente de mecatrónica que responde claro."
-    tts           = "true"
-    target_lang   = "es"
-  }
-  ```
-
-  Respuesta JSON:
-  ```json
-  {
-    "stt_text": "hola como estas",
-    "llm_text": "Estoy bien, gracias.",
-    "tts_audio": "data:audio/wav;base64,UklGRjQAAABXQVZFZm10..."
-  }
-  ```
-
-  ### 6. SLM (Audio → Texto → LLM → **stream de texto+audio**)
-  ```powershell
-  $in = "test.wav"
-  curl -N -X POST http://localhost:8000/slm -F "file=@$in" -F "system_prompt=Sos un asistente." -F "tts=true" -F "target_lang=es"
-  ```
-
-  **Respuesta SSE** (recortada):
-  ```
-  event: text
-  data: {"stt_text":"hola mundo","llm_text":"¡Hola! ¿Cómo estás?"}
-
-}
-  data: {"seq":0,"last":false,"mime":"audio/wav","data":"UklGRjQAAABXQVZF..."}
-
-
-  data: {"seq":1,"last":true,"mime":"audio/wav","data":"AAA...=="}
-
-```
-  data: {"ok":true,"ts":1692483021}
-  ```
-
-### ALM (audio completo) IMPORTANTE, CORRER EL COMANDO CON LA TERMINAL ABIERTA EN LA MISMA RUTA DE gateway.py POWERSHELL 5
+### ALM (audio completo) — PowerShell 5 (ejecutar en la misma ruta de gateway.py)
 
 ```powershell
-
 $ErrorActionPreference = "Stop"
 
 # Rutas basadas en la carpeta actual
@@ -387,7 +262,7 @@ $out    = Join-Path $outDir 'respuesta.wav'
 if (-not (Test-Path $in)) { throw "No se encontró el archivo de entrada: $in" }
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
-# ----- Enviar multipart/form-data con .NET HttpClient (compatible con PS 5.1) -----
+# Enviar multipart/form-data con .NET HttpClient (compatible con PS 5.1)
 Add-Type -AssemblyName System.Net.Http
 
 $client = [System.Net.Http.HttpClient]::new()
@@ -398,7 +273,6 @@ $fs = [System.IO.FileStream]::new($in, [System.IO.FileMode]::Open, [System.IO.Fi
 $sc = [System.Net.Http.StreamContent]::new($fs)
 $sc.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("audio/wav")
 $mp.Add($sc, "file", [System.IO.Path]::GetFileName($in))
-
 # Partes de texto
 $mp.Add([System.Net.Http.StringContent]::new("Sos un asistente de mecatrónica que responde de forma clara."), "system_prompt")
 $mp.Add([System.Net.Http.StringContent]::new("true"), "tts")
@@ -417,7 +291,7 @@ finally {
   $client.Dispose()
 }
 
-# ----- Procesar respuesta -----
+# Procesar respuesta
 $jr = $raw | ConvertFrom-Json
 $jr.stt_text
 $jr.llm_text
@@ -442,12 +316,9 @@ if ($jr.tts_audio) {
 } else {
   "No vino audio (tts_audio = null)." + ($(if ($jr.tts_error) { " Detalle: $($jr.tts_error)" } else { "" }))
 }
-
-
-
 ```
 
- POWERSHELL 7
+### ALM (audio completo) — PowerShell 7
 
 ```powershell
 # Rutas (basadas en la carpeta actual)
@@ -485,12 +356,9 @@ if ($resp.tts_audio) {
 } else {
   "No vino audio (tts_audio = null)."
 }
-
-
 ```
 
 ---
-
 
 ## ⚙️ Notas técnicas para `gateway.py`
 
@@ -528,9 +396,9 @@ Tip: No usar temperature=0 en generate (Transformers requiere >0).
 
 ## 🛡️ Consejos rápidos
 
-- Si usás **llama Vulkan** (winget), quitá `--flash-attn` en `LLAMA_ARGS`.  
-- ¿OOM? Bajá `--n-gpu-layers` o `--ctx-size`, o cuantizá a **Q4_K_M**.  
-- **STT en GPU**: `USE_CUDA_FOR_STT=True` (puede ir más lento si coincide con el LLM).  
+- Si usás **llama Vulkan** (winget), quitá `--flash-attn` en `LLAMA_ARGS`.
+- ¿OOM? Bajá `--n-gpu-layers` o `--ctx-size`, o cuantizá a **Q4_K_M**.
+- **STT en GPU**: `USE_CUDA_FOR_STT=True` (puede ir más lento si coincide con el LLM).
 - Para exponer en LAN, abrí el **puerto 8000** en el firewall de Windows:
   ```powershell
   netsh advfirewall firewall add rule name="UNLZ-AI-STUDIO 8000" dir=in action=allow protocol=TCP localport=8000
@@ -540,28 +408,28 @@ Tip: No usar temperature=0 en generate (Transformers requiere >0).
 
 ## 📂 Estructura del repositorio
 
-- Código fuente del **gateway** y utilitarios  
-- Documentación técnica y guías de uso  
+- Código fuente del **gateway** y utilitarios
+- Documentación técnica y guías de uso
 - Ejemplos de clientes (Python/JS) para consumir la API
 
 ---
 
 ## 📜 Licencia y uso
 
-Los proyectos aquí incluidos pueden tener diferentes licencias, según lo definido por sus autores.  
+Los proyectos aquí incluidos pueden tener diferentes licencias, según lo definido por sus autores.
 Antes de usar o modificar, revisá el archivo **LICENSE** correspondiente.
 
 ---
 
 ## 🌐 Sitios
 
-- **Página principal:** https://unlzfi.github.io/  
-- **Repositorios:** https://github.com/orgs/UNLZFI/repositories  
+- **Página principal:** https://unlzfi.github.io/
+- **Repositorios:** https://github.com/orgs/UNLZFI/repositories
 - **Facultad de Ingeniería – UNLZ:** https://ingenieria.unlz.edu.ar/
 
 ---
 
 ## 📬 Contacto
 
-**Facultad de Ingeniería – UNLZ**  
+**Facultad de Ingeniería – UNLZ**
 Carrera de Ingeniería en Mecatrónica
