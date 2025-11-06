@@ -8,7 +8,7 @@ import warnings
 import os, sys, time, base64, tempfile, shutil, subprocess, threading
 import atexit, signal, gc, asyncio
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable
 import psutil
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
@@ -26,6 +26,8 @@ import uvicorn
 from huggingface_hub import snapshot_download
 import asyncio
 from fastapi.responses import StreamingResponse
+from runtime_profiles import detect_system_info, ProfileManager, run_dependency_checks
+from studio_gui import start_gui_thread
 
 # --- Logs y TMP dirs (deben existir antes de usarlos) ---
 LOG_DIR = Path("logs")
@@ -36,6 +38,32 @@ TTS_TMP_DIR = LOG_DIR / "piper_tmp"           # opción A: dentro de logs/
 # TTS_TMP_DIR = Path(tempfile.gettempdir()) / "unlz_piper_tmp"  # opción B: en %TEMP%
 TTS_TMP_DIR.mkdir(parents=True, exist_ok=True)
 
+GUI_LOGO_PATH = Path("assets") / "SOLO-LOGO-AZUL-HORIZONTAL-fondo-transparente.ico"
+GUI_SPLASH_PATH = Path("assets") / "LOGO AZUL HORIZONTAL - fondo transparente.png"
+
+SYSTEM_INFO = detect_system_info()
+PROFILE_MANAGER = ProfileManager(SYSTEM_INFO, LOG_DIR)
+
+env_profile = os.getenv("UNLZ_PROFILE")
+if env_profile:
+    ok, msg = PROFILE_MANAGER.set_active_profile(env_profile, force=True)
+    print(f"[preflight] Perfil forzado ({env_profile}): {msg}")
+
+PREFLIGHT_REPORT = run_dependency_checks(SYSTEM_INFO, LOG_DIR)
+
+if PREFLIGHT_REPORT.get("warnings"):
+    print("[preflight] Advertencias detectadas:")
+    for warning in PREFLIGHT_REPORT["warnings"]:
+        print("  -", warning)
+else:
+    print("[preflight] Dependencias OK.")
+
+if PREFLIGHT_REPORT.get("suggestions"):
+    print("[preflight] Sugerencias:")
+    for suggestion in PREFLIGHT_REPORT["suggestions"]:
+        print("  -", suggestion)
+
+print("[preflight] Perfil activo:", PROFILE_MANAGER.describe_active_profile())
 
 
 # --- VLM (LMDeploy / HF ubicaciones) ---
@@ -495,21 +523,18 @@ def _synth_with_piper(text: str) -> bytes:
 # CONFIG - AJUSTÁ ESTAS RUTAS
 # =========================
 #LLAMA_SERVER_EXE = r"C:\llama-cuda\llama-server.exe"  # CUDA
-LLAMA_SERVER_EXE = "llama-server"  # Vulkan
-LLAMA_MODEL = r"C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf"
-LLAMA_HOST       = "127.0.0.1"
-LLAMA_PORT       = 8080
+LLAMA_SERVER_EXE = os.environ.get("LLAMA_SERVER_EXE", "llama-server")  # Vulkan por defecto
+LLAMA_HOST       = os.environ.get("LLAMA_HOST", "127.0.0.1")
+LLAMA_PORT       = int(os.environ.get("LLAMA_PORT", "8080"))
 
-LLAMA_ARGS = [
-    "-m", LLAMA_MODEL,
-    "--host", LLAMA_HOST, "--port", str(LLAMA_PORT),
-    "--ctx-size", "4096",
-    "--n-gpu-layers", "28",    # si tu build no acepta este flag, usar --ngl
-    "-t", "12",
-    "--no-mmap",           # fuerza copia completa a RAM (en vez de mmapped desde disco)
-    # "--mlock",           # (opcional) intenta “fijar” en RAM; en Windows puede requerir privilegios
-    # "--flash-attn"          # si usás CUDA/cuBLAS (no Vulkan)
-]
+
+def _active_llama_model() -> Path:
+    preset = PROFILE_MANAGER.active_profile
+    return PROFILE_MANAGER.resolve_model_path(preset.recommended_model_key)
+
+
+def _llama_args() -> list[str]:
+    return PROFILE_MANAGER.build_llama_args(LLAMA_HOST, LLAMA_PORT)
 
 # --- Preflight cleanup: kill orphans and free ports ---
 def _kill_by_port(port: int):
@@ -539,29 +564,57 @@ _kill_by_port(LLAMA_PORT)
 _kill_by_port(VLM_PORT)
 
 # -------- Warm all weights into RAM (no GPU allocation yet) --------
-print("[warm] Priming OS page cache (LLM/VLM/TTS) ...")
-try:
-    # LLM (GGUF)
-    _warm_file(LLAMA_MODEL)
+def _warm_all_assets(enabled_endpoints: Optional[Iterable[str]] = None):
+    endpoints = set(enabled_endpoints or PROFILE_MANAGER.enabled_endpoints())
+    if not endpoints:
+        print("[warm] No endpoints seleccionados, warming omitido.")
+        return
+    print(f"[warm] Priming assets for endpoints: {', '.join(sorted(endpoints))}")
+    try:
+        if endpoints & {"llm", "alm", "slm"}:
+            _warm_file(_active_llama_model())
+        if endpoints & {"vlm", "clm"}:
+            if 'VLM_CACHE_DIR' in globals() and os.path.isdir(VLM_CACHE_DIR):
+                _warm_dir(VLM_CACHE_DIR, patterns=(
+                    "snapshots/*/*.safetensors",
+                    "snapshots/*/tokenizer.json",
+                    "snapshots/*/preprocessor_config.json",
+                    "snapshots/*/config.json",
+                ))
+            else:
+                print("[warm] skip VLM: VLM_CACHE_DIR no definido o carpeta inexistente")
+            if endpoints & {"clm"}:
+                try:
+                    _ensure_hf_vlm()
+                except Exception as e:
+                    print(f"[warm] HF VLM warm falló suavemente: {e}")
+        if endpoints & {"alm", "slm"}:
+            _warm_file(PIPER_VOICE)
+            pv_json = PIPER_VOICE + ".json" if not PIPER_VOICE.endswith(".json") else PIPER_VOICE
+            if os.path.isfile(pv_json):
+                _warm_file(pv_json)
+    except Exception as e:
+        print(f"[warm] Warming skipped with error: {e}")
 
-    # VLM (HF cache carpeta) — only warm snapshot shards, not all paths
-    if 'VLM_CACHE_DIR' in globals() and os.path.isdir(VLM_CACHE_DIR):
-        _warm_dir(VLM_CACHE_DIR, patterns=(
-            "snapshots/*/*.safetensors",
-            "snapshots/*/tokenizer.json",
-            "snapshots/*/preprocessor_config.json",
-            "snapshots/*/config.json",
-        ))
-    else:
-        print("[warm] skip VLM: VLM_CACHE_DIR no definido o carpeta inexistente")
 
-    # Piper voice (onnx + json sidecar si existe)
-    _warm_file(PIPER_VOICE)
-    pv_json = PIPER_VOICE + ".json" if not PIPER_VOICE.endswith(".json") else PIPER_VOICE
-    if os.path.isfile(pv_json):
-        _warm_file(pv_json)
-except Exception as e:
-    print(f"[warm] Warming skipped with error: {e}")
+if os.getenv("PRELOAD_MODELS", "0") == "1":
+    _warm_all_assets()
+
+
+def _require_endpoint(name: str) -> None:
+    if not PROFILE_MANAGER.is_endpoint_enabled(name):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Endpoint '/{name}' deshabilitado en la configuración.",
+        )
+
+
+def _apply_endpoint_defaults(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    settings = PROFILE_MANAGER.get_endpoint_settings(endpoint)
+    for key, value in settings.items():
+        if key not in payload or payload[key] is None:
+            payload[key] = value
+    return payload
 
 
 
@@ -569,10 +622,14 @@ except Exception as e:
 
 
 # Use CUDA for STT if VRAM is available for faster inference
-USE_CUDA_FOR_STT = True
+_primary_vram = SYSTEM_INFO.vram_gb_per_gpu[0] if SYSTEM_INFO.vram_gb_per_gpu else 0.0
+USE_CUDA_FOR_STT = (
+    SYSTEM_INFO.cuda_available
+    and not PROFILE_MANAGER.active_profile.cpu_only
+    and _primary_vram >= 8.0
+)
 STT_MODEL_SIZE   = "medium"
 # Permitir override por variable de entorno
-import os
 STT_DEVICE = os.getenv("STT_DEVICE", "cuda" if USE_CUDA_FOR_STT else "cpu")
 STT_COMPUTE_TYPE = "float16" if STT_DEVICE == "cuda" else "int8"
 
@@ -600,11 +657,11 @@ import threading
 
 class GpuProcessManager:
 
-
-    def __init__(self):
+    def __init__(self, profile_manager: ProfileManager):
         self.mode = None
         self.proc: Optional[subprocess.Popen] = None
         self._lock = threading.RLock()
+        self._profile_manager = profile_manager
 
     def _kill_tree(self, p: psutil.Process):
         for c in p.children(recursive=True):
@@ -651,19 +708,27 @@ class GpuProcessManager:
 
     def ensure_mode(self, mode: str):
         assert mode in ("llm", "vlm")
+        restart_required = self._profile_manager.consume_restart_flag(mode)
         with self._lock:
-            if self.mode == mode and self.proc and self.proc.poll() is None:
+            if self.mode == mode and self.proc and self.proc.poll() is None and not restart_required:
                 return
 
-            self.stop()
-            time.sleep(1.5)
+            if self.proc:
+                self.stop()
+                time.sleep(1.5)
 
             if mode == "llm":
                 print("Starting llama-server...")
+                profile_desc = self._profile_manager.describe_active_profile()
+                print(
+                    f"  -> Perfil {profile_desc['key']} ({profile_desc['title']}) "
+                    f"modelo={profile_desc['model']} ctx={profile_desc['ctx_size']} ngl={profile_desc['n_gpu_layers']}"
+                )
                 log_path = LOG_DIR / "llama-server.log"
                 try:
                     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-                    self.proc = _spawn_with_tee([LLAMA_SERVER_EXE] + LLAMA_ARGS, log_path, creationflags=flags)
+                    llama_args = self._profile_manager.build_llama_args(LLAMA_HOST, LLAMA_PORT)
+                    self.proc = _spawn_with_tee([LLAMA_SERVER_EXE] + llama_args, log_path, creationflags=flags)
                     self._wait_llama_ready(timeout=600, proc=self.proc)
                 except Exception as e:
                     raise RuntimeError(f"llama-server no inició: {e}. Ver {log_path}")
@@ -723,6 +788,10 @@ class GpuProcessManager:
                 time.sleep(1.0)
         raise RuntimeError(f"{url} no respondió 200 en {timeout}s.")
 
+    def is_running(self, mode: str = "llm") -> bool:
+        with self._lock:
+            return self.mode == mode and self.proc and self.proc.poll() is None
+
 
 
 # --- Global async httpx client ---
@@ -767,7 +836,7 @@ async def lifespan(app: FastAPI):
 
 
     # ⇩⇩ PRELOAD LLM ANTES DEL PRIMER REQUEST ⇩⇩
-    if os.environ.get("PRELOAD_LLM", "1") == "1":
+    if os.environ.get("PRELOAD_LLM", "0") == "1":
         print("[startup] Preloading Qwen3-coder-30b …")
         # Levanta el proceso y espera /health OK
         await asyncio.to_thread(manager.ensure_mode, "llm")
@@ -788,14 +857,14 @@ async def lifespan(app: FastAPI):
             print("[startup] warm-up LLM fallo suave:", e)
 
     # Start Piper CLI worker at startup
-    if os.environ.get("PRELOAD_PIPER", "1") == "1":
+    if os.environ.get("PRELOAD_PIPER", "0") == "1":
         print("[startup] Preloading Piper (CLI worker) …")
         await asyncio.to_thread(ensure_piper_worker)
 
 
 
     # (Opcional) si querés precargar también el VLM HF (ojo VRAM)
-    if os.environ.get("PRELOAD_VLM", "1") == "1":
+    if os.environ.get("PRELOAD_VLM", "0") == "1":
         print("[startup] Preloading Qwen2.5-VL-7B-Instruct …")
         await asyncio.to_thread(_ensure_hf_vlm)
         def _warmup_vlm():
@@ -817,7 +886,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="IA Gateway (LLM/VLM/ALM)", lifespan=lifespan)
-manager = GpuProcessManager()
+manager = GpuProcessManager(PROFILE_MANAGER)
+
+if os.getenv("ENABLE_GUI", "1") != "0":
+    gui_thread = start_gui_thread(
+        PROFILE_MANAGER,
+        PREFLIGHT_REPORT,
+        LOG_DIR,
+        GUI_LOGO_PATH,
+        manager=manager,
+        warm_callback=_warm_all_assets,
+        splash_path=GUI_SPLASH_PATH,
+    )
+    if gui_thread:
+        print("[gui] Interfaz Tkinter iniciada (puede minimizarse mientras se usa la API).")
 
 @atexit.register
 def _at_exit():
@@ -854,9 +936,12 @@ class LLMMessage(BaseModel):
 class LLMChatPayload(BaseModel):
     model: str
     messages: list[LLMMessage]
-    temperature: float = 0.2
-    max_tokens: int = 512
-    top_p: float = 0.9
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repeat_penalty: Optional[float] = None
+    stop: Optional[list[str]] = None
 
 
 from fastapi.concurrency import run_in_threadpool
@@ -871,6 +956,9 @@ async def llm_chat(
     stream: bool = Query(False),
     client: httpx.AsyncClient = Depends(get_httpx_client),
 ):
+    _require_endpoint("llm")
+    payload_dict = payload.model_dump(exclude_none=True)
+    payload_dict = _apply_endpoint_defaults("llm", payload_dict)
     try:
         await run_in_threadpool(manager.ensure_mode, "llm")
     except RuntimeError as e:
@@ -880,14 +968,14 @@ async def llm_chat(
     # Robust streaming detection: explicit query param or ?stream=true
     if stream or request.query_params.get("stream") == "true":
         def iter_llama():
-            with httpx.stream("POST", url, json=payload.model_dump(), timeout=None) as r:
+            with httpx.stream("POST", url, json=payload_dict, timeout=None) as r:
                 r.raise_for_status()
                 for chunk in r.iter_bytes():
                     if chunk:
                         yield chunk
         return StreamingResponse(iter_llama(), media_type="text/event-stream")
     else:
-        r = await client.post(url, json=payload.model_dump())
+        r = await client.post(url, json=payload_dict)
         return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
 # =========================
@@ -897,17 +985,18 @@ from fastapi.concurrency import run_in_threadpool
 
 @app.post("/clm")
 async def clm_chat(payload: LLMChatPayload):
-    # Opcional: liberar GPU si tenés llama-server corriendo y querés evitar OOMs.
-    # await run_in_threadpool(manager.stop)
-
-    # Reutilizamos el mismo schema que /llm, pero llamamos al backend HF
-    # (Qwen2.5-VL-7B-Instruct) que ya maneja _hf_vlm_infer.
+    _require_endpoint("clm")
+    payload_dict = payload.model_dump(exclude_none=True)
+    payload_dict = _apply_endpoint_defaults("clm", payload_dict)
+    messages = payload_dict.get("messages") or [
+        {"role": m.role, "content": m.content} for m in payload.messages
+    ]
     hf_payload = {
-        "model": "Qwen/Qwen2.5-VL-7B-Instruct",
-        "temperature": payload.temperature,
-        "max_tokens": payload.max_tokens,
-        "top_p": payload.top_p,
-        "messages": [{"role": m.role, "content": m.content} for m in payload.messages],
+        "model": payload_dict.get("model") or "Qwen/Qwen2.5-VL-7B-Instruct",
+        "temperature": payload_dict.get("temperature"),
+        "max_tokens": payload_dict.get("max_tokens"),
+        "top_p": payload_dict.get("top_p"),
+        "messages": messages,
     }
     try:
         resp = await run_in_threadpool(_hf_vlm_infer, hf_payload)
@@ -936,15 +1025,18 @@ class VLMMessage(BaseModel):
 class VLMChatPayload(BaseModel):
     model: Optional[str] = None
     messages: list[VLMMessage]
-    temperature: float = 0.2
-    max_tokens: int = 512
-    top_p: float = 0.9
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    top_p: Optional[float] = None
 
 @app.post("/vlm")
 async def vlm_chat(payload: VLMChatPayload, client: httpx.AsyncClient = Depends(get_httpx_client)):
+    _require_endpoint("vlm")
+    payload_dict = payload.model_dump(exclude_none=True)
+    payload_dict = _apply_endpoint_defaults("vlm", payload_dict)
     if VLM_BACKEND == "hf":
         try:
-            resp = await run_in_threadpool(_hf_vlm_infer, payload.model_dump())
+            resp = await run_in_threadpool(_hf_vlm_infer, payload_dict)
             import json
             return Response(content=json.dumps(resp), status_code=200, media_type="application/json")
         except Exception as e:
@@ -956,7 +1048,7 @@ async def vlm_chat(payload: VLMChatPayload, client: httpx.AsyncClient = Depends(
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
         url = f"http://{VLM_HOST}:{VLM_PORT}/v1/chat/completions"
-        r = await client.post(url, json=payload.model_dump())
+        r = await client.post(url, json=payload_dict)
         return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
 # =========================
@@ -978,6 +1070,8 @@ async def alm_pipeline(
     client: httpx.AsyncClient = Depends(get_httpx_client)
 ):
 
+
+    _require_endpoint("alm")
 
     def transcribe_audio():
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename or "audio").suffix or ".wav") as tmp:
@@ -1005,12 +1099,15 @@ async def alm_pipeline(
 
     llm_payload = {
         "model": "qwen3-coder-30b",
-        "temperature": 0.2,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text}
         ]
     }
+    llm_payload = _apply_endpoint_defaults("llm", llm_payload)
+    alm_defaults = PROFILE_MANAGER.get_endpoint_settings("alm")
+    for key, value in alm_defaults.items():
+        llm_payload[key] = value
     url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
     r = await client.post(url, json=llm_payload)
     r.raise_for_status()
@@ -1044,6 +1141,7 @@ async def slm_pipeline(
     target_lang: Optional[str] = Form("es"),
     client: httpx.AsyncClient = Depends(get_httpx_client)
 ):
+    _require_endpoint("slm")
     import json
     from datetime import datetime
 
@@ -1076,12 +1174,16 @@ async def slm_pipeline(
     # --- LLM (obtenemos texto primero) ---
     llm_payload = {
         "model": "qwen3-coder-30b",
-        "temperature": 0.2,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text}
         ]
     }
+    llm_payload = _apply_endpoint_defaults("llm", llm_payload)
+    slm_defaults = PROFILE_MANAGER.get_endpoint_settings("slm")
+    for key, value in slm_defaults.items():
+        if key != "chunk_size":
+            llm_payload[key] = value
     url = f"http://{LLAMA_HOST}:{LLAMA_PORT}/v1/chat/completions"
         # ---- Banner DESPUÉS de los logs de Uvicorn ----
     async def _banner_after_uvicorn():
@@ -1139,7 +1241,8 @@ async def slm_pipeline(
                         return tmp.name
 
                 wav_path = await run_in_threadpool(synth_to_file, answer_text)
-                CHUNK = 64 * 1024
+                chunk_kib = int(slm_defaults.get("chunk_size", 32) or 32)
+                CHUNK = max(1, chunk_kib) * 1024
                 seq = 0
                 try:
                     with open(wav_path, "rb") as f:

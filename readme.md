@@ -15,14 +15,54 @@ Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobb
 - **/alm** – audio→texto (**STT**) → LLM → texto→voz (**TTS**)
 - **/slm** – igual a **/alm**, pero devuelve en **streaming SSE**: primero el texto y luego chunks de audio WAV base64
 
+### Interfaz grafica (Tkinter)
+
+Al iniciar `gateway.py` se abre un monitor opcional construido con Tkinter (se puede desactivar con `ENABLE_GUI=0`). Desde ahi se puede:
+- Ver el hardware detectado y el perfil activo.
+- Iniciar/detener el servidor LLM manualmente y ver un indicador de progreso mientras arranca o se apaga.
+- Activar o desactivar endpoints (/llm, /clm, /vlm, /alm, /slm) y definir sus parámetros por separado antes de levantar los servicios.
+- Cambiar de preset sin reiniciar la app (se reinicia `llama-server` automaticamente al proximo uso).
+- Revisar los ultimos logs de `llama-server` y `lmdeploy`.
+- Registrar feedback de testers en `logs/tester_feedback.jsonl`, lo que alimenta las recomendaciones futuras.
+- Gestionar el perfil `personalizado`: autoconfigurar según el equipo, elegir el GGUF que quieras y guardar los parámetros de llama.cpp.
+- Disfrutar una interfaz estilo Win11 con splash screen inicial usando los assets institucionales.
+
 ➡️ **Auto-switch**: el gateway levanta/para `llama-server` o `lmdeploy` para no pelear VRAM en una sola GPU.
 
 ---
 
+## Ajustes automaticos de hardware
+
+Desde `gateway.py` ahora se detectan CPU, RAM y GPU al iniciar, y se elige el preset mas apropiado para `llama-server`. Los perfiles principales son:
+- `ultra` y `alto`: equipos con >=16 GB de VRAM y 64+ GB de RAM, usan Qwen3-Coder-30B con mas capas en GPU y contexto amplio.
+- `balanceado` y `medio`: GPUs de 8 a 12 GB con 32-48 GB de RAM, priorizan Qwen3-Coder-14B y ajustan `--n-gpu-layers` para evitar OOM.
+- `baja`: pensado para RTX 2060/3050 (6 GB) con 24-32 GB de RAM. Limita `ctx-size` a 2048 y fija `--n-gpu-layers=8`.
+- `cpu`: modo de emergencia cuando no hay GPU o no hay espacio de VRAM; usa Qwen3-Coder-7B en CPU y baja los hilos.
+
+La configuracion se guarda en `logs/runtime_profile.json` y puede forzarse con variables de entorno:
+- `UNLZ_PROFILE=baja` (u otro preset) para fijar un perfil aunque la auto-deteccion sugiera otro.
+- `LLAMA_MODEL_DIR`, `LLAMA_MODEL_30B`, `LLAMA_MODEL_14B`, `LLAMA_MODEL_7B` para redefinir rutas de modelos GGUF.
+- `ENABLE_GUI=0` si queres desactivar la nueva interfaz Tkinter.
+
+Tabla de ajustes reportados por testers:
+
+| Equipo | GPU / VRAM | RAM | Perfil elegido | Ajustes aplicados | Observaciones |
+| --- | --- | --- | --- | --- | --- |
+| Workstation UNLZ | RTX 3090 (24 GB) | 128 GB | alto | `ctx-size=6144`, `n-gpu-layers=42`, `batch=16` | Referencia de laboratorio |
+| Notebook tester | RTX 2060 (6 GB) | 32 GB | baja | `ctx-size=2048`, `n-gpu-layers=8`, `batch=6` | Evita congelamientos al cargar el LLM |
+| Notebook backup | RTX 3070 (8 GB) | 32 GB | medio | `ctx-size=3072`, `n-gpu-layers` adaptado automaticamente | Buen balance CPU/GPU |
+| Equipo sin GPU | iGPU integrada | 16 GB | cpu | `n-gpu-layers=0`, `batch=4`, `threads=8` | Solo para pruebas basicas |
+
+El preflight deja un resumen en `logs/preflight_report.json` con las advertencias detectadas.
+
+Los presets pueden ajustarse editando `runtime_profiles.py`.
+
+Para configuraciones a medida activá el preset `personalizado`. Podés tomar un punto de partida automático según tu hardware, elegir cualquier archivo GGUF (no solo los modelos sugeridos) y ajustar `ctx-size`, `n_gpu_layers`, `threads` y `batch-size`. Los cambios quedan guardados en `logs/runtime_profile.json` para la próxima sesión.
+
 ## 🧩 Requisitos PREVIOS
 
 - Windows 10/11 con PowerShell
-- Python 3.10+ (64-bit) https://www.python.org/downloads/
+- Python 3.10 o 3.11 (64-bit). El preflight avisa si detecta 3.12/3.13.
 - Conexión a internet para descargar modelos
 - CUDA Toolkit https://developer.nvidia.com/cuda-toolkit
 
@@ -112,6 +152,22 @@ python .\gateway.py
 - **/vlm** → proxyea a **LMDeploy** (si no está, lo levanta y apaga `llama-server`)
 - **/alm** → corre **STT** (GPU por defecto), luego **/llm**, y **TTS** con Piper (devuelve WAV en **data:base64**)
 - **/slm** → igual a **/alm**, pero responde en streaming SSE (texto y audio por partes)
+
+### Salida esperada al iniciar
+
+```
+[preflight] Advertencias detectadas:
+  - lmdeploy 0.9.2 puede presentar incompatibilidades con Python >= 3.12. Considere un entorno 3.10.
+[preflight] Sugerencias:
+  - Verifique que las rutas de modelos en C:\models contengan las variantes 30B, 14B y 7B en formato GGUF.
+[preflight] Perfil activo: {...}
+[preflight] killing orphans / freeing ports …
+[gui] Interfaz Tkinter iniciada (puede minimizarse mientras se usa la API).
+```
+
+- Las advertencias dependen de tu entorno: si detectamos Python 3.12/3.13 se recomienda migrar a 3.10/3.11 para evitar incompatibilidades con `lmdeploy` y `torch`.
+- El servidor LLM ya no se inicia ni precarga automáticamente; usá el botón “Iniciar servidor” en la GUI cuando quieras cargarlo. El indicador muestra el progreso y luego podés “Matar servidor” para liberar memoria.
+- La GUI Tkinter corre en un hilo separado; desactívala con `ENABLE_GUI=0` si preferís modo consola.
 
 ---
 
@@ -378,17 +434,9 @@ if ($resp.tts_audio) {
   - Alternativa 100% offline: convertir a TurboMind y servir la carpeta convertida.
 
 - Para **llama.cpp**:
-  ```python
-  LLAMA_ARGS = [
-      "-m", LLAMA_MODEL,
-      "--host", LLAMA_HOST, "--port", str(LLAMA_PORT),
-      "--ctx-size", "8192",
-      "--n-gpu-layers", "35",
-      "-t", "12"
-      # "--flash-attn"  # solo si usás CUDA/cuBLAS (no Vulkan)
-    ]
-  ```
-  Si tu versión de llama da error con `--n-gpu-layers`, probá `--ngl`.
+  - Los argumentos se generan automaticamente segun el preset activo (revisar `runtime_profiles.py`).
+  - Para ajustar manualmente usa `UNLZ_PROFILE=<perfil>` o edita la tabla de presets para cambiar `ctx-size`, `batch-size` y `--n-gpu-layers`.
+  - Si tu build no acepta `--n-gpu-layers`, edita la heuristica y usa `--ngl` en la lista generada.
 
 Tip: No usar temperature=0 en generate (Transformers requiere >0).
 
