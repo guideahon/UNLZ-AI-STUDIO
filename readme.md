@@ -6,6 +6,47 @@
 Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobbistas.
 
 ---
+## Objetivo del repositorio
+
+Uso educativo y de laboratorio
+Que una universidad (como la UNLZ) pueda tener un servidor local donde docentes y estudiantes:
+
+Hagan TPs y prototipos con LLMs/VLMs.
+
+Prueben chatbots, asistentes de programación, análisis de imágenes, STT y TTS.
+
+Programen contra una sola API sin importar qué modelo o backend hay por detrás.
+
+🛠️ Simplificar el self-hosting en PCs reales
+
+Detecta CPU/RAM/GPU y elige automáticamente un perfil (alto, medio, baja, cpu).
+
+Configura parámetros de llama.cpp (ctx, n-gpu-layers, batch, etc.) según el equipo.
+
+Evita que llama-server y lmdeploy peleen por la VRAM (auto-switch).
+
+🧩 Ofrecer una puerta de entrada clara para hobbistas
+
+Guía paso a paso para instalar modelos, dependencias y TTS en Windows.
+
+Endpoints listos para consumir desde Python, PowerShell, ESP32, etc.
+
+Ejemplos concretos de uso: texto→texto, imagen+texto, audio→texto→voz.
+
+🖥️ Dar una interfaz “humana” para operar el servidor
+
+GUI en Tkinter estilo Win11 para:
+
+Ver hardware y perfil activo.
+
+Levantar/apagar servidores.
+
+Activar/desactivar endpoints.
+
+Ajustar presets y modelos personalizados.
+
+Registrar feedback de testers.
+---
 
 ## 🚀 ¿Qué expone este proyecto?
 
