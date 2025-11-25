@@ -2,9 +2,6 @@
 
 # Universidad Nacional de Lomas de Zamora – Facultad de Ingeniería
 ## UNLZ-AI-STUDIO
-
-Guía práctica de *self-hosting* de LLMs/VLMs por API para universidades y hobbistas.
-
 ---
 ## Objetivo del repositorio
 
