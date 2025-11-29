@@ -1,0 +1,21 @@
+Para el perfil bajo pide modelo Qwen3-coder-7B-Instruct-Q4_K_M.gguf, y no dice de como instalarlo en el readme. Viendolo online no existe, hay versiones Qwen2.5-coder-7B-Instruct o Qwen3-coder-1.7B
+
+Use el modelo Qwen2.5-coder-7B-Instruct con buenos resultados
+
+Para instalar el Qwen2.5-coder-7B-Instruct
+
+hf download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF `
+  --include "qwen2.5-coder-7b-instruct-q4_k_m.gguf"`
+  --local-dir "C:\models\qwen2.5-coder-7b"
+
+$body = @{
+  model = "qwen2.5-coder-7b"
+  messages = @(
+    @{ role="system"; content="You are an expert in Finite element analysis." },
+    @{ role="user";   content="Explica la diferencia entre analisis lineal y no lineal" }
+  )
+} | ConvertTo-Json -Depth 5
+
+$web = Invoke-WebRequest -Uri "http://localhost:8000/llm" -Method Post -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType "application/json; charset=utf-8" 
+$response = $web.Content | ConvertFrom-Json 
+Write-Output $response.choices[0].message.content
