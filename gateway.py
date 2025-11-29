@@ -974,10 +974,17 @@ async def llm_chat(
                 for chunk in r.iter_bytes():
                     if chunk:
                         yield chunk
-        return StreamingResponse(iter_llama(), media_type="text/event-stream")
+        return StreamingResponse(iter_llama(), media_type="text/event-stream; charset=utf-8")
     else:
         r = await client.post(url, json=payload_dict)
-        return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+        import json
+        # Asegurar UTF-8 en la respuesta
+        try:
+            data = r.json()
+            content = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        except:
+            content = r.content
+        return Response(content=content, status_code=r.status_code, media_type="application/json; charset=utf-8")
 
 # =========================
 # /clm -> igual a /llm pero usando Qwen/Qwen2.5-VL-7B-Instruct (HF in-proc)
