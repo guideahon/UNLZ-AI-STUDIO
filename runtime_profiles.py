@@ -96,7 +96,7 @@ def _default_model_registry() -> Dict[str, Path]:
         "qwen3-coder-7b-q4": Path(
             os.environ.get(
                 "LLAMA_MODEL_7B",
-                base_dir / "qwen3-coder-7b" / "Qwen3-Coder-7B-Instruct-Q4_K_M.gguf",
+                base_dir / "qwen2.5-coder-7b" / "Qwen2.5-Coder-7B-Instruct-q4_k_m.gguf",
             )
         ),
     }
