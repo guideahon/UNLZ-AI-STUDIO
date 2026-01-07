@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inclu-IA: Live Subtitles</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            background-color: #000;
+            color: #FFD700; /* Yellow for high contrast */
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #header {
+            text-align: center;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        #captions {
+            flex-grow: 1;
+            overflow-y: auto;
+            font-size: 2em;
+            line-height: 1.5;
+            padding: 10px;
+        }
+        .caption-line {
+            margin-bottom: 15px;
+            animation: fadeIn 0.5s;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .status {
+            font-size: 0.8rem;
+            color: gray;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>Inclu-IA</h1>
+        <div class="status" id="connection-status">Desconectado...</div>
+    </div>
+    
+    <div id="captions">
+        <!-- Subtitles appear here -->
+    </div>
+
+    <script>
+        const socket = io();
+        const captionsDiv = document.getElementById('captions');
+        const statusDiv = document.getElementById('connection-status');
+
+        socket.on('connect', () => {
+            statusDiv.textContent = "Conectado | Escuchando...";
+            statusDiv.style.color = "green";
+        });
+
+        socket.on('disconnect', () => {
+            statusDiv.textContent = "Desconectado";
+            statusDiv.style.color = "red";
+        });
+
+        socket.on('new_caption', (data) => {
+            const p = document.createElement('p');
+            p.className = 'caption-line';
+            p.textContent = data.text;
+            captionsDiv.appendChild(p);
+            
+            // Auto scroll
+            captionsDiv.scrollTop = captionsDiv.scrollHeight;
+        });
+    </script>
+</body>
+</html>

@@ -93,10 +93,10 @@ def _default_model_registry() -> Dict[str, Path]:
                 base_dir / "qwen3-coder-14b" / "Qwen3-Coder-14B-Instruct-Q4_K_M.gguf",
             )
         ),
-        "qwen3-coder-7b-q4": Path(
+        "qwen2.5-coder-7b-q4": Path(
             os.environ.get(
                 "LLAMA_MODEL_7B",
-                base_dir / "qwen2.5-coder-7b" / "Qwen2.5-Coder-7B-Instruct-q4_k_m.gguf",
+                base_dir / "qwen2.5-coder-7b" / "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
             )
         ),
     }
@@ -106,7 +106,7 @@ def _default_model_registry() -> Dict[str, Path]:
 DEFAULT_BENCHMARKS: Dict[str, Dict[str, float]] = {
     "qwen3-coder-30b-q5": {"min_vram_gb": 20.0, "prompt_latency_ms": 1850.0},
     "qwen3-coder-14b-q4": {"min_vram_gb": 12.0, "prompt_latency_ms": 980.0},
-    "qwen3-coder-7b-q4": {"min_vram_gb": 6.0, "prompt_latency_ms": 640.0},
+    "qwen2.5-coder-7b-q4": {"min_vram_gb": 6.0, "prompt_latency_ms": 640.0},
 }
 
 DEFAULT_ENDPOINT_FLAGS: Dict[str, bool] = {
@@ -215,7 +215,7 @@ DEFAULT_PRESETS: List[ProfilePreset] = [
         description="Ideal para GPUs tipo RTX 2060 / 3050 con 6 GB y 32 GB de RAM. Reduce más el contexto.",
         min_vram_gb=6.0,
         min_ram_gb=24.0,
-        recommended_model_key="qwen3-coder-7b-q4",
+        recommended_model_key="qwen2.5-coder-7b-q4",
         n_gpu_layers=8,
         ctx_size=2048,
         threads=10,
@@ -228,7 +228,7 @@ DEFAULT_PRESETS: List[ProfilePreset] = [
         description="Fallback sin GPU: usa el modelo 7B en CPU y contexto corto para no congelar el equipo.",
         min_vram_gb=0.0,
         min_ram_gb=16.0,
-        recommended_model_key="qwen3-coder-7b-q4",
+        recommended_model_key="qwen2.5-coder-7b-q4",
         n_gpu_layers=0,
         ctx_size=1536,
         threads=8,
@@ -798,149 +798,10 @@ class ProfileManager:
             msg += " Atención: el archivo del modelo no existe."
         return True, msg
 
-    def autoconfigure_custom(self) -> Dict[str, object]:
-        settings = self._default_custom_config()
-        self._custom_config = settings
-        self._persist_state()
-        self._pending_restarts.add("llm")
-        return settings
+    def _load_feedback(self) -> List[Dict[str, Any]]:
+        # Placeholder for loading feedback from jsonl
+        return []
 
-    def _apply_feedback_heuristics(
-        self, candidates: List[ProfilePreset], feedback: List[Dict[str, str]]
-    ) -> ProfilePreset:
-        """Very light heuristic: if testers reported freezes for the top candidate + GPU, pick next."""
-        if not feedback or len(candidates) == 1:
-            return candidates[0]
-
-        gpu_name = self.system_info.gpu_names[0] if self.system_info.gpu_names else "N/A"
-        bad_presets = {
-            entry.get("preset")
-            for entry in feedback
-            if entry.get("gpu") == gpu_name and entry.get("issue") in {"freeze", "oom"}
-        }
-        for preset in candidates:
-            if preset.key not in bad_presets:
-                return preset
-        return candidates[-1]
-
-    # --- Feedback management -----------------------------------------
-    def _load_feedback(self) -> List[Dict[str, str]]:
-        if not self._feedback_path.exists():
-            return []
-        rows: List[Dict[str, str]] = []
-        try:
-            with self._feedback_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rows.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-        except Exception:
-            return []
-        return rows
-
-    def append_feedback(self, preset_key: str, notes: str, issue: str) -> None:
-        record = {
-            "preset": preset_key,
-            "notes": notes,
-            "issue": issue,
-            "ts": time.time(),
-            "gpu": self.system_info.gpu_names[0] if self.system_info.gpu_names else "N/A",
-        }
-        try:
-            with self._feedback_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-
-    def get_feedback_summary(self) -> Dict[str, int]:
-        rows = self._load_feedback()
-        stats: Dict[str, int] = {}
-        for entry in rows:
-            key = entry.get("preset", "unknown")
-            stats[key] = stats.get(key, 0) + 1
-        return stats
-
-    # --- Restart coordination ---------------------------------------
-    def consume_restart_flag(self, mode: str) -> bool:
-        with self._lock:
-            if mode in self._pending_restarts:
-                self._pending_restarts.remove(mode)
-                return True
-            return False
-
-    # --- Debug helpers -----------------------------------------------
-    def describe_active_profile(self) -> Dict[str, str]:
-        preset = self.active_profile
-        if preset.user_configurable:
-            settings = self.get_custom_settings()
-        else:
-            settings = self._derive_launch_settings(preset)
-        return {
-            "key": preset.key,
-            "title": preset.title,
-            "model": str(settings["model_path"]),
-            "ctx_size": str(settings["ctx_size"]),
-            "threads": str(settings["threads"]),
-            "n_gpu_layers": str(settings["n_gpu_layers"]),
-            "batch_size": str(settings["batch_size"]),
-        }
-
-
-def run_dependency_checks(system_info: SystemInfo, log_dir: Path) -> Dict[str, Iterable[str]]:
-    warnings: List[str] = []
-    suggestions: List[str] = []
-
-    major_minor = tuple(int(x) for x in system_info.python_version.split(".")[:2])
-    if major_minor >= (3, 13):
-        warnings.append(
-            "Python 3.13 no está soportado por lmdeploy ni por torch estable. Recomendamos 3.10 / 3.11."
-        )
-
-    if torch is None:
-        warnings.append("PyTorch no está instalado. Las funciones de GPU quedarán deshabilitadas.")
-    else:
-        version = getattr(torch, "__version__", "desconocido")
-        cuda_version = getattr(torch.version, "cuda", "sin CUDA")
-        if torch.cuda.is_available() and cuda_version and not cuda_version.startswith("12"):
-            warnings.append(
-                f"torch {version} usa CUDA {cuda_version}. Para GPUs RTX 20/30 sugerimos CUDA 12.1."
-            )
-
-    try:
-        import importlib
-
-        lmdeploy_spec = importlib.util.find_spec("lmdeploy")
-        if lmdeploy_spec is None:
-            warnings.append(
-                "lmdeploy no está instalado en el entorno actual. El modo VLM usará únicamente el backend HF."
-            )
-        else:
-            lmdeploy = importlib.import_module("lmdeploy")
-            version = getattr(lmdeploy, "__version__", "desconocido")
-            if major_minor >= (3, 12):
-                warnings.append(
-                    f"lmdeploy {version} puede presentar incompatibilidades con Python >= 3.12. "
-                    "Considere un entorno 3.10."
-                )
-    except Exception as exc:  # pragma: no cover - defensivo
-        warnings.append(f"No se pudo comprobar lmdeploy ({exc}).")
-
-    suggestions.append(
-        "Verifique que las rutas de modelos en C:\\models contengan las variantes 30B, 14B y 7B en formato GGUF."
-    )
-
-    report = {
-        "warnings": warnings,
-        "suggestions": suggestions,
-        "system": asdict(system_info),
-        "ts": time.time(),
-    }
-    try:
-        (log_dir / "preflight_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-    return report
+    def _apply_feedback_heuristics(self, candidates: List[ProfilePreset], feedback: List[Dict[str, Any]]) -> ProfilePreset:
+        # Placeholder for future logic
+        return candidates[0]
