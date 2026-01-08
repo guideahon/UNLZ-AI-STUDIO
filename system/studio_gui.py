@@ -39,6 +39,9 @@ from modules.inclu_ia import IncluIAModule
 from modules.monitor import MonitorModule
 from modules.research_assistant import ResearchAssistantModule
 from modules.model_3d import Model3DModule
+from modules.spotedit import SpotEditModule
+from modules.hy_motion import HYMotionModule
+from modules.proedit import ProEditModule
 
 # Set Theme
 THEME_PATH = os.path.join(os.path.dirname(__file__), "assets", "themes", "ingenieria.json")
@@ -254,6 +257,24 @@ class StudioGUI(ctk.CTk):
                 "title_key": "mod_research_title",
                 "desc_key": "mod_research_desc",
                 "icon": "RA"
+            },
+            "spotedit": {
+                "class": SpotEditModule,
+                "title_key": "mod_spotedit_title",
+                "desc_key": "mod_spotedit_desc",
+                "icon": "SE"
+            },
+            "hy_motion": {
+                "class": HYMotionModule,
+                "title_key": "mod_hymotion_title",
+                "desc_key": "mod_hymotion_desc",
+                "icon": "HM"
+            },
+            "proedit": {
+                "class": ProEditModule,
+                "title_key": "mod_proedit_title",
+                "desc_key": "mod_proedit_desc",
+                "icon": "PE"
             }
         }
         
