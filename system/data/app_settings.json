@@ -1,4 +1,6 @@
 {
   "model_dir": "C:\\models",
-  "show_logs": false
+  "show_logs": true,
+  "language": "es",
+  "theme": "Oscuro"
 }

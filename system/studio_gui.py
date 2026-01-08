@@ -132,7 +132,9 @@ class StudioGUI(ctk.CTk):
         # i18n + Settings
         self.languages = self.load_languages()
         self.settings = self.load_settings()
-        self.current_lang = self.settings.get("language", "es")
+        self.current_lang = (self.settings.get("language", "es") or "es").lower()
+        if self.current_lang not in self.languages:
+            self.current_lang = "es"
 
         saved_theme = self.settings.get("theme")
         if saved_theme in ("Dark", "Light"):
@@ -190,7 +192,7 @@ class StudioGUI(ctk.CTk):
         self.footer_frame.grid(row=7, column=0, padx=20, pady=20, sticky="ew")
         
         self.lang_switcher = ctk.CTkSegmentedButton(self.footer_frame, values=["ES", "EN"], command=self.change_language)
-        self.lang_switcher.set("ES")
+        self.lang_switcher.set("EN" if self.current_lang == "en" else "ES")
         self.lang_switcher.pack(fill="x", pady=(0, 10))
         
         # Theme Switcher
@@ -269,12 +271,6 @@ class StudioGUI(ctk.CTk):
                 "title_key": "mod_hymotion_title",
                 "desc_key": "mod_hymotion_desc",
                 "icon": "HM"
-            },
-            "proedit": {
-                "class": ProEditModule,
-                "title_key": "mod_proedit_title",
-                "desc_key": "mod_proedit_desc",
-                "icon": "PE"
             }
         }
         
@@ -355,8 +351,13 @@ class StudioGUI(ctk.CTk):
         self.refresh_ui()
 
     def change_theme(self, mode):
-        ctk.set_appearance_mode(mode)
-        self.set_setting("theme", mode)
+        theme_key = mode
+        if mode == self.tr("theme_dark"):
+            theme_key = "Dark"
+        elif mode == self.tr("theme_light"):
+            theme_key = "Light"
+        ctk.set_appearance_mode(theme_key)
+        self.set_setting("theme", theme_key)
 
     def refresh_ui(self):
         if self._home_telemetry_job:
