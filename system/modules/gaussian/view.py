@@ -13,10 +13,10 @@ class GaussianModule(StudioModule):
     def __init__(self, parent):
         super().__init__(parent, "gaussian", "Gaussian Splatting")
         self.view = None
+        self.app = parent
 
     def get_view(self) -> ctk.CTkFrame:
-        if self.view is None:
-            self.view = GaussianView(self.parent)
+        self.view = GaussianView(self.app.main_container)
         return self.view
 
     def on_enter(self):
@@ -109,37 +109,27 @@ class GaussianView(ctk.CTkFrame):
         self.current_output_dir = None
         self.scene_buttons = []
         
-        # Start model check in background
         self.after(100, self.start_model_check)
-        # Load scenes
         self.after(500, self.load_scenes)
 
     def load_scenes(self):
-        # Clear existing buttons
         for btn in self.scene_buttons:
             btn.destroy()
         self.scene_buttons = []
 
-        # Assuming output is relative to where the script runs, but for a module we might need to be specific
-        # We will use the module directory for now or a global user directory.
-        # Let's use os.getcwd() for compatibility with existing code structure if run from root
         output_base = os.path.join(os.getcwd(), "modules", "gaussian", "output")
         if not os.path.exists(output_base):
             try:
                 os.makedirs(output_base, exist_ok=True)
             except OSError:
-                 # Fallback to current dir if permission issues (e.g. Program Files)
                  output_base = os.path.join(os.getcwd(), "output")
                  os.makedirs(output_base, exist_ok=True)
-            
 
-        # Find folders starting with splat_
         scenes = []
         try:
             for name in os.listdir(output_base):
                 path = os.path.join(output_base, name)
                 if os.path.isdir(path) and name.startswith("splat_"):
-                    # Parse timestamp for better display
                     try:
                         ts_str = name.replace("splat_", "")
                         dt = datetime.strptime(ts_str, "%Y-%m-%d_%H-%M-%S")
@@ -150,7 +140,6 @@ class GaussianView(ctk.CTkFrame):
         except Exception as e:
             self.log(f"Error loading scenes: {e}")
 
-        # Sort by newest first
         scenes.sort(key=lambda x: x[1], reverse=True)
 
         for name, path in scenes:
@@ -162,7 +151,6 @@ class GaussianView(ctk.CTkFrame):
         self.current_output_dir = path
         self.log(f"Selected scene: {os.path.basename(path)}")
         
-        # Check if valid
         if os.path.exists(os.path.join(path, "gaussians", "index.html")) or os.path.exists(os.path.join(path, "gaussians", "scene.ply")):
              self.open_folder_button.configure(state="normal")
              self.view_result_button.configure(state="normal")
@@ -177,18 +165,16 @@ class GaussianView(ctk.CTkFrame):
         thread.start()
 
     def check_model(self):
-        # Default model URL and path
         model_url = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
         cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "checkpoints")
         model_path = os.path.join(cache_dir, "sharp_2572gikvuh.pt")
         
         self.safe_log("Checking for AI model...")
         
-        # Check if file exists and is valid (arbitrary check > 1MB)
         if os.path.exists(model_path):
             try:
                 file_size = os.path.getsize(model_path)
-                if file_size < 1024 * 1024: # Less than 1MB
+                if file_size < 1024 * 1024: 
                     self.safe_log(f"Found corrupted model file ({file_size} bytes). Deleting...")
                     try:
                         os.remove(model_path)
@@ -207,27 +193,20 @@ class GaussianView(ctk.CTkFrame):
             try:
                 os.makedirs(cache_dir, exist_ok=True)
                 import requests
-                
-                # Use requests with verify=False to bypass SSL errors
                 response = requests.get(model_url, stream=True, verify=False)
                 response.raise_for_status()
-                
-                block_size = 1024 * 1024 # 1MB
+                block_size = 1024 * 1024 
                 downloaded = 0
-                
                 with open(model_path, 'wb') as file:
                     for data in response.iter_content(block_size):
                         file.write(data)
                         downloaded += len(data)
-                        # Update log sparingly to avoid freezing UI
-                        if downloaded % (5 * 1024 * 1024) == 0: # Every 5MB
+                        if downloaded % (5 * 1024 * 1024) == 0: 
                             self.safe_log(f"Downloaded {downloaded / 1024 / 1024:.1f} MB...")
-                
                 self.safe_log("Model downloaded successfully.")
                 self.safe_log("Ready to process.")
             except Exception as e:
                 self.safe_log(f"Failed to download model: {e}")
-                # Try to clean up partial file
                 if os.path.exists(model_path):
                     try:
                         os.remove(model_path)
@@ -266,7 +245,6 @@ class GaussianView(ctk.CTkFrame):
     def run_process(self, input_path):
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            # Save to modules/gaussian/output
             output_dir = os.path.join(os.getcwd(), "modules", "gaussian", "output", f"splat_{timestamp}")
             os.makedirs(output_dir, exist_ok=True)
             self.current_output_dir = output_dir
@@ -275,10 +253,6 @@ class GaussianView(ctk.CTkFrame):
             self.log(f"Input: {input_path}")
             self.log(f"Output: {output_dir}")
 
-            # Construct command
-            # We must assume the environment is set up correctly for 'sharp' to be in path
-            # or point to the executable if known. 
-            # For now we assume 'sharp' is in PATH or we are in the venv.
             cmd = ["sharp", "predict", "-i", input_path, "-o", output_dir]
             
             process = subprocess.Popen(
@@ -308,20 +282,15 @@ class GaussianView(ctk.CTkFrame):
 
     def setup_viewer(self, output_dir):
         try:
-            # Locate template in the module folder
             viewer_src = os.path.join(os.path.dirname(__file__), "viewer_template.html")
-            
             gaussians_dir = os.path.join(output_dir, "gaussians")
             os.makedirs(gaussians_dir, exist_ok=True)
-            
             viewer_dst = os.path.join(gaussians_dir, "index.html")
             scene_dst = os.path.join(gaussians_dir, "scene.ply")
             
-            # Find the generated .ply file
             ply_files = [f for f in os.listdir(output_dir) if f.endswith(".ply")]
             
             if ply_files:
-                # Move the first found ply file to gaussians/scene.ply
                 src_ply = os.path.join(output_dir, ply_files[0])
                 shutil.move(src_ply, scene_dst)
                 self.log(f"Moved {ply_files[0]} to {scene_dst}")
@@ -348,26 +317,19 @@ class GaussianView(ctk.CTkFrame):
 
     def view_result(self):
         if self.current_output_dir:
-            # Start a simple HTTP server to avoid CORS issues with file:///
-            # We serve the output directory
             port = 8000
-            # Find a free port
             import socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             while port < 8100:
                 result = sock.connect_ex(('127.0.0.1', port))
-                if result != 0: # Port is free
+                if result != 0: 
                     break
                 port += 1
             sock.close()
 
             def start_server():
                 try:
-                    # Use python.exe instead of pythonw.exe for the server to avoid console issues
-                    # and redirect output to DEVNULL
                     python_exe = sys.executable.replace("pythonw.exe", "python.exe")
-                    
-                    # Serve the specific output directory
                     handler = subprocess.Popen(
                         [python_exe, "-m", "http.server", str(port), "--directory", self.current_output_dir],
                         stdout=subprocess.DEVNULL,
@@ -379,7 +341,6 @@ class GaussianView(ctk.CTkFrame):
 
             threading.Thread(target=start_server, daemon=True).start()
             
-            # Open browser
             url = f"http://localhost:{port}/gaussians/index.html"
             self.log(f"Opening viewer at {url}")
             import webbrowser

@@ -1,0 +1,18 @@
+{
+  "backends": {
+    "hunyuan3d2": {
+      "repo_path": "",
+      "command": ""
+    },
+    "reconv": {
+      "repo_path": "",
+      "command": ""
+    },
+    "stepx1": {
+      "repo_path": "",
+      "command": ""
+    }
+  },
+  "backend": "hunyuan3d2",
+  "python_path": ""
+}

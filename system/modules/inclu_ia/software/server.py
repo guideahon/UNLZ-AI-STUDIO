@@ -17,7 +17,12 @@ import numpy as np
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("IncluIA-Server")
 
-app = Flask(__name__, template_folder="../web/templates", static_folder="../web/static")
+# Absolute paths for assets
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE_DIR = os.path.join(BASE_DIR, "../web/templates")
+STATIC_DIR = os.path.join(BASE_DIR, "../web/static")
+
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 app.config['SECRET_KEY'] = 'incluia_secret'
 socketio = SocketIO(app, cors_allowed_origins="*")
 

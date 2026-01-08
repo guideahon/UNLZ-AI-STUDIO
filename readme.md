@@ -167,3 +167,4 @@ npm install
 npm run dev
 # Abrir http://localhost:3000
 ```
+Si queres, puedo sumar telemetria basica de estado (CPU/RAM/GPU en tiempo real) o un boton de "Abrir docs" en la Home.

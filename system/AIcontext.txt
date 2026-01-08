@@ -1,0 +1,64 @@
+# UNLZ AI STUDIO - Documentación Técnica y Funcional
+Fecha de Actualización: 2026-01-07
+Versión: Alpha/Dev
+
+## 1. Visión General
+UNLZ AI STUDIO es una plataforma integral de escritorio diseñada para la Universidad Nacional de Lomas de Zamora (UNLZ). Su objetivo principal es democratizar el acceso a herramientas de Inteligencia Artificial (IA) de vanguardia, permitiendo la ejecución local de modelos masivos (LLMs, VLMs, Audio) sin depender de servicios en la nube, garantizando así la privacidad de los datos y el funcionamiento offline.
+
+## 2. Objetivos del Proyecto
+*   **Soberanía de Datos**: Ejecución 100% local para proteger la información sensible de investigaciones y estudiantes.
+*   **Accesibilidad**: Proveer una interfaz gráfica (GUI) amigable que abstraiga la complejidad de terminales y comandos para usar modelos de IA.
+*   **Modularidad**: Sistema de plugins/módulos que permite expandir funcionalidades (ej: agregar nuevas herramientas como Gaussian Splatting o Inclu-IA) sin reescribir el núcleo.
+*   **Multi-Modalidad**: Soporte nativo para Texto (LLM), Código (CLM), Visión (VLM) y Audio (ALM/SLM).
+
+## 3. Arquitectura Técnica
+El sistema está construido en **Python** utilizando un enfoque modular.
+
+*   **GUI Framework**: CustomTkinter (Modern UI para Tkinter).
+*   **Gestión de Procesos (`ProcessManager`)**: Un orquestador central que descarga modelos de HuggingFace, gestiona dependencias (drivers, ejecutables) y lanza servidores de inferencia en segundo plano (endpoints locales).
+*   **Motores de Inferencia**:
+    *   **Llama.cpp / Llama-server**: Para LLMs (GGUF) y CLMs. Optimizado para CPU y GPU (CUDA).
+    *   **LMDeploy / PyTorch**: Para modelos de visión más complejos (VLM).
+    *   **Faster-Whisper**: Para reconocimiento de voz a texto (ALM).
+    *   **XTTS**: Para síntesis de voz (SLM).
+*   **Internacionalización (i18n)**: Soporte completo Español/Inglés mediante diccionarios JSON (`languages.json`).
+
+## 4. Módulos Principales
+
+### A. Endpoints de IA (Monitor)
+El centro de control para los servicios de backend. Permite al usuario "instalar" (descargar) y "ejecutar" servidores de API compatibles con OpenAI.
+*   **Servicios Gestionados**:
+    *   **Backend LLM**: Puerto 8080. Para chat general.
+    *   **Backend Código**: Puerto 8081. Especializado en programación.
+    *   **Backend Visión**: Puerto 9090. Análisis de imágenes.
+    *   **Backend Audio (Whisper)**: Puerto 5000. Transcripción.
+    *   **Backend Habla (TTS)**: Puerto 5001. Generación de voz.
+*   **Gestión Inteligente**: Sistema de marcadores (`.marker`) para gestionar dependencias compartidas entre servicios y evitar borrados accidentales de modelos.
+
+### B. Chat AI (Frontend LLM)
+Una interfaz de chat completa para interactuar con los modelos locales.
+*   **Biblioteca de Modelos**: Escaneo automático de archivos `.gguf` locales.
+*   **Descarga Integrada**: Buscador conectado a HuggingFace con "Presets" de modelos populares (Llama 3, Qwen 2.5, DeepSeek, etc.).
+*   **Gestión**: Opción para eliminar modelos y liberar espacio.
+*   **Inferencia**: Conexión directa al servidor local (llama-server) para generar respuestas en tiempo real.
+
+### C. Inclu-IA
+Módulo de accesibilidad diseñado para aulas inclusivas.
+*   **Funcionamiento**: Levanta un servidor Web (Flask) que utiliza el micrófono del docente para transcribir la clase en tiempo real.
+*   **Interfaz Web**: Los alumnos se conectan vía red local (LAN) a una URL (ej: `http://192.168.1.x:5000`) para ver los subtítulos en sus dispositivos.
+*   **Características**: Botón "Abrir en Navegador", detección automática de IP local.
+
+### D. Gaussian Splatting
+Herramienta de visualización y generación 3D (en desarrollo). Permite crear representaciones tridimensionales fotorrealistas a partir de imágenes/video.
+
+## 5. Características Destacadas
+1.  **Detección de Hardware**: El sistema (`ProfileManager`) detecta automáticamente si existe una GPU NVIDIA (CUDA) y configura los modelos para usar aceleración gráfica. Si no, hace fallback a CPU optimizado.
+2.  **Sistema de Archivos Portátil**: Los modelos se guardan en una ubicación central (`C:\models` por defecto o configurable), permitiendo compartir recursos entre módulos.
+3.  **Logs y Depuración**: Visor de logs integrado en la aplicación para facilitar el diagnóstico de errores.
+
+## 6. Estructura de Directorios (Resumen)
+*   `/system`: Código fuente principal.
+    *   `studio_gui.py`: Entry point.
+    *   `process_manager.py`: Lógica de backend.
+    *   `/modules`: Plugins (llm_frontend, monitor, inclu_ia, etc.).
+    *   `/assets`: Recursos estáticos e idiomas.
