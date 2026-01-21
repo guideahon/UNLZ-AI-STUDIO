@@ -1,21 +1,17 @@
 {
-  "profile_key": "baja",
+  "profile_key": "cpu",
   "system": {
     "python_version": "3.12.9",
     "platform": "Windows 11",
     "cpu_name": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
     "cpu_threads": 16,
     "ram_gb": 127.09,
-    "gpu_count": 1,
-    "gpu_names": [
-      "NVIDIA GeForce RTX 3090"
-    ],
-    "vram_gb_per_gpu": [
-      24.0
-    ],
-    "cuda_available": true
+    "gpu_count": 0,
+    "gpu_names": [],
+    "vram_gb_per_gpu": [],
+    "cuda_available": false
   },
-  "ts": 1767815632.420795,
+  "ts": 1768495869.3721142,
   "auto_selected": true,
   "custom_overrides": {},
   "endpoint_config": {},

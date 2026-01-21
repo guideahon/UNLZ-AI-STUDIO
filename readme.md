@@ -161,10 +161,14 @@ Write-Output $response.choices[0].message.content
 
 ### Web UI (Nueva Migración)
 Para acceder a la nueva interfaz web:
-```bash
-cd web_ui
+```powershell
+cd system\web_ui
 npm install
 npm run dev
 # Abrir http://localhost:3000
 ```
+Acceso rapido:
+- `system\run_web_ui.bat` (siempre disponible)
+- `UNLZ AI Studio Web.lnk` (atajo en la carpeta raiz)
+
 Si queres, puedo sumar telemetria basica de estado (CPU/RAM/GPU en tiempo real) o un boton de "Abrir docs" en la Home.

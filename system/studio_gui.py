@@ -42,6 +42,11 @@ from modules.model_3d import Model3DModule
 from modules.spotedit import SpotEditModule
 from modules.hy_motion import HYMotionModule
 from modules.proedit import ProEditModule
+from modules.neutts import NeuttsModule
+from modules.klein import KleinModule
+from modules.hyworld import HYWorldModule
+from modules.cyberscraper import CyberScraperModule
+from modules.ml_sharp import MLSharpModule
 
 # Set Theme
 THEME_PATH = os.path.join(os.path.dirname(__file__), "assets", "themes", "ingenieria.json")
@@ -236,6 +241,12 @@ class StudioGUI(ctk.CTk):
                 "desc_key": "mod_gaussian_desc",
                 "icon": "GS"
             },
+            "ml_sharp": {
+                "class": MLSharpModule,
+                "title_key": "mod_mlsharp_title",
+                "desc_key": "mod_mlsharp_desc",
+                "icon": "MS"
+            },
             "model_3d": {
                 "class": Model3DModule,
                 "title_key": "mod_model3d_title",
@@ -266,11 +277,35 @@ class StudioGUI(ctk.CTk):
                 "desc_key": "mod_spotedit_desc",
                 "icon": "SE"
             },
+            "klein": {
+                "class": KleinModule,
+                "title_key": "mod_klein_title",
+                "desc_key": "mod_klein_desc",
+                "icon": "K2"
+            },
+            "hyworld": {
+                "class": HYWorldModule,
+                "title_key": "mod_hyworld_title",
+                "desc_key": "mod_hyworld_desc",
+                "icon": "HW"
+            },
+            "cyberscraper": {
+                "class": CyberScraperModule,
+                "title_key": "mod_cyber_title",
+                "desc_key": "mod_cyber_desc",
+                "icon": "CS"
+            },
             "hy_motion": {
                 "class": HYMotionModule,
                 "title_key": "mod_hymotion_title",
                 "desc_key": "mod_hymotion_desc",
                 "icon": "HM"
+            },
+            "neutts": {
+                "class": NeuttsModule,
+                "title_key": "mod_neutts_title",
+                "desc_key": "mod_neutts_desc",
+                "icon": "TTS"
             }
         }
         
