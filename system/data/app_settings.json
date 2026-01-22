@@ -2,5 +2,6 @@
   "language": "es",
   "model_dir": "C:\\models",
   "show_logs": true,
-  "theme": "Light"
+  "theme": "Light",
+  "rag_endpoint": "http://127.0.0.1:8080/v1/chat/completions"
 }

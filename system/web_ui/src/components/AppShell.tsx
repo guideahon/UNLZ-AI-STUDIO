@@ -73,7 +73,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <img className="brand-logo" src="/unlz-logo.png" alt="UNLZ" />
           <div>
             <div className="brand-name">{translations.app_title || "UNLZ AI STUDIO"}</div>
-            <div className="brand-tag">Laboratorio de IA</div>
+            <div className="brand-tag">{translations.brand_tag || "Laboratorio de IA"}</div>
           </div>
         </Link>
         <nav className="nav">

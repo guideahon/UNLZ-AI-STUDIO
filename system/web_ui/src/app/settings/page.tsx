@@ -4,7 +4,7 @@ import AppShell from "@/components/AppShell";
 import { useApp } from "@/context/AppContext";
 
 const LANGS = [
-  { value: "es", label: "Espanol" },
+  { value: "es", label: "Español" },
   { value: "en", label: "English" },
 ];
 
@@ -14,19 +14,19 @@ export default function SettingsPage() {
   return (
     <AppShell>
       <div className="page-header">
-        <div className="eyebrow">{translations.nav_settings || "Settings"}</div>
+        <div className="eyebrow">{translations.settings_eyebrow || "Preferences"}</div>
         <h1>{translations.settings_title || "Settings"}</h1>
         <p>{translations.settings_desc || "Customize how the studio behaves across interfaces."}</p>
       </div>
 
       <section className="panel">
         <div className="panel-header">
-          <h2>Preferencias</h2>
+          <h2>{translations.settings_section_title || "Preferences"}</h2>
         </div>
         <div className="panel-body">
           <div className="form">
             <label>
-              {translations.language || "Language"}
+              {translations.settings_language_label || "Language"}
               <select
                 value={settings.language || "es"}
                 onChange={(event) => updateSettings({ language: event.target.value })}
@@ -40,7 +40,7 @@ export default function SettingsPage() {
             </label>
 
             <label>
-              Model Directory
+              {translations.settings_model_dir_label || "Model directory"}
               <input
                 value={settings.model_dir || ""}
                 onChange={(event) => updateSettings({ model_dir: event.target.value })}
