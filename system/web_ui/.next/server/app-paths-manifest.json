@@ -2,6 +2,6 @@
   "/page": "app/page.js",
   "/modules/page": "app/modules/page.js",
   "/settings/page": "app/settings/page.js",
-  "/modules/monitor/page": "app/modules/monitor/page.js",
-  "/modules/llm_frontend/page": "app/modules/llm_frontend/page.js"
+  "/modules/llm_frontend/page": "app/modules/llm_frontend/page.js",
+  "/modules/monitor/page": "app/modules/monitor/page.js"
 }
