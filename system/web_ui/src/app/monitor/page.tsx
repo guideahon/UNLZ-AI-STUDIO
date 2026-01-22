@@ -115,50 +115,7 @@ export default function MonitorPage() {
         <p>Controla los servicios locales y revisa el hardware activo.</p>
       </div>
 
-      <section className="stats">
-        <div className="stat-card">
-          <div className="stat-label">CPU</div>
-          <div className="stat-value">
-            {data.system.cpu_name} ({data.system.cpu_threads} Threads)
-          </div>
-          <div className="list-meta">
-            {data.system.cpu_percent !== undefined ? `Uso ${data.system.cpu_percent.toFixed(0)}%` : "Uso N/A"}
-            {data.system.cpu_temp_c !== null && data.system.cpu_temp_c !== undefined
-              ? ` · Temp ${data.system.cpu_temp_c.toFixed(0)}°C`
-              : ""}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">RAM</div>
-          <div className="stat-value">{data.system.ram_gb} GB</div>
-          <div className="list-meta">
-            {data.system.ram_used_gb !== undefined
-              ? `Usada ${data.system.ram_used_gb} GB`
-              : "Usada N/A"}
-            {data.system.ram_available_gb !== undefined
-              ? ` · Libre ${data.system.ram_available_gb} GB`
-              : ""}
-            {data.system.ram_percent !== undefined ? ` · ${data.system.ram_percent.toFixed(0)}%` : ""}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">GPU</div>
-          <div className="stat-value">
-            {gpu.name ? `${gpu.name} (${gpu.vram || 0} GB)` : "N/A"}
-          </div>
-          <div className="list-meta">
-            {data.system.gpu_util !== null && data.system.gpu_util !== undefined
-              ? `Uso ${data.system.gpu_util.toFixed(0)}%`
-              : "Uso N/A"}
-            {data.system.gpu_temp_c !== null && data.system.gpu_temp_c !== undefined
-              ? ` · Temp ${data.system.gpu_temp_c.toFixed(0)}°C`
-              : ""}
-            {data.system.gpu_mem_used_gb !== null && data.system.gpu_mem_used_gb !== undefined
-              ? ` · VRAM ${data.system.gpu_mem_used_gb.toFixed(1)}/${(data.system.gpu_mem_total_gb || 0).toFixed(1)} GB`
-              : ""}
-          </div>
-        </div>
-      </section>
+      
 
       <section className="panel">
         <div className="panel-header">
@@ -174,11 +131,6 @@ export default function MonitorPage() {
                   <div className="list-meta">Port: {service.port}</div>
                 </div>
                 <div className="list-actions monitor-actions">
-                  <span className="pill">
-                    {service.running
-                      ? translations.svc_running || "Running"
-                      : translations.svc_stopped || "Stopped"}
-                  </span>
                   {(service.key === "llm_service" || service.key === "clm_service") && (
                     <select
                       value={modelSelection[service.key] || ""}

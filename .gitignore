@@ -1,3 +1,16 @@
 /system/3d-backends
 /system/ai-backends
 /system/web_ui/node_modules
+/system/web_ui/.next
+/system/web_ui/out
+/system/web_ui/.turbo
+/system/data
+/system/logs
+/system/ml-sharp-out
+/system/hymotion-out
+/system/hyworld-out
+/system/3d-out
+/system/3d-weights
+/system/modules/**/output
+/system/modules/**/.venv
+/system/modules/**/__pycache__

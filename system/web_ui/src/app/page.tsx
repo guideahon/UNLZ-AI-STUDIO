@@ -4,10 +4,76 @@ import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { fetchJson } from "@/lib/webBridge";
 import { useApp } from "@/context/AppContext";
+import { useEffect, useState } from "react";
+
+type MonitorData = {
+  system: {
+    cpu_name: string;
+    cpu_threads: number;
+    ram_gb: number;
+    ram_used_gb?: number;
+    ram_available_gb?: number;
+    ram_percent?: number;
+    cpu_percent?: number;
+    cpu_temp_c?: number | null;
+    cuda_available: boolean;
+    gpu_names: string[];
+    vram_gb: number[];
+    gpu_util?: number | null;
+    gpu_temp_c?: number | null;
+    gpu_mem_used_gb?: number | null;
+    gpu_mem_total_gb?: number | null;
+  };
+};
+
+const rankGpu = (name: string, vram: number) => {
+  const lowered = name.toLowerCase();
+  let score = vram || 0;
+  if (lowered.includes("nvidia")) score += 1000;
+  if (lowered.includes("amd") || lowered.includes("radeon")) score += 500;
+  if (lowered.includes("intel")) score += 200;
+  if (lowered.includes("virtual") || lowered.includes("microsoft") || lowered.includes("basic render")) {
+    score -= 1000;
+  }
+  return score;
+};
+
+const pickGpu = (names: string[] = [], vram: number[] = []) => {
+  if (!names.length) {
+    return { name: "", vram: 0 };
+  }
+  const pairs = names.map((name, idx) => ({ name, vram: vram[idx] || 0 }));
+  pairs.sort((a, b) => rankGpu(b.name, b.vram) - rankGpu(a.name, a.vram));
+  return pairs[0];
+};
 
 export default function Home() {
   const { translations, modules, favorites, refresh } = useApp();
   const installed = modules.filter((mod) => mod.installed);
+  const [monitor, setMonitor] = useState<MonitorData | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const refreshMonitor = async () => {
+      try {
+        const data = await fetchJson<MonitorData>("/monitor");
+        if (active) {
+          setMonitor(data);
+        }
+      } catch {
+        if (active) {
+          setMonitor(null);
+        }
+      }
+    };
+
+    refreshMonitor();
+    const id = setInterval(refreshMonitor, 5000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, []);
 
   return (
     <AppShell>
@@ -49,55 +115,56 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="panel">
-        <div className="panel-header">
-          <h2>Modulos instalados</h2>
-          <Link className="ghost" href="/modules">
-            {translations.btn_open || "Open"}
-          </Link>
+      <section className="stats">
+        <div className="stat-card">
+          <div className="stat-label">CPU</div>
+          <div className="stat-value">
+            {monitor?.system?.cpu_name
+              ? `${monitor.system.cpu_name} (${monitor.system.cpu_threads} Threads)`
+              : "N/A"}
+          </div>
+          <div className="list-meta">
+            {monitor?.system?.cpu_percent !== undefined ? `Uso ${monitor.system.cpu_percent.toFixed(0)}%` : "Uso N/A"}
+            {monitor?.system?.cpu_temp_c !== null && monitor?.system?.cpu_temp_c !== undefined
+              ? ` · Temp ${monitor.system.cpu_temp_c.toFixed(0)}°C`
+              : ""}
+          </div>
         </div>
-        <div className="panel-body">
-          {installed.length === 0 ? (
-            <div className="empty">No hay modulos instalados aun.</div>
-          ) : (
-            <div className="list">
-              {installed.map((module) => (
-                <div key={module.key} className="list-row">
-                  <div>
-                    <div className="list-title">
-                      {favorites.includes(module.key) ? `* ${module.title}` : module.title}
-                    </div>
-                    <div className="list-meta">{module.description}</div>
-                  </div>
-                  <div className="list-actions">
-                    <button
-                      className="ghost"
-                      onClick={async () => {
-                        const isFav = favorites.includes(module.key);
-                        if (!isFav && favorites.length >= 3) {
-                          return;
-                        }
-                        await fetchJson(isFav ? "/favorites/remove" : "/favorites/add", {
-                          method: "POST",
-                          body: JSON.stringify({ key: module.key }),
-                        });
-                        await refresh();
-                      }}
-                    >
-                      {favorites.includes(module.key)
-                        ? translations.fav_remove || "Quitar de favoritos"
-                        : translations.fav_add || "Agregar a favoritos"}
-                    </button>
-                    <Link className="ghost" href={`/modules/${module.key}`}>
-                      {translations.btn_open || "Open"}
-                    </Link>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="stat-card">
+          <div className="stat-label">RAM</div>
+          <div className="stat-value">{monitor?.system?.ram_gb ? `${monitor.system.ram_gb} GB` : "N/A"}</div>
+          <div className="list-meta">
+            {monitor?.system?.ram_used_gb !== undefined ? `Usada ${monitor.system.ram_used_gb} GB` : "Usada N/A"}
+            {monitor?.system?.ram_available_gb !== undefined
+              ? ` · Libre ${monitor.system.ram_available_gb} GB`
+              : ""}
+            {monitor?.system?.ram_percent !== undefined ? ` · ${monitor.system.ram_percent.toFixed(0)}%` : ""}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">GPU</div>
+          <div className="stat-value">
+            {monitor?.system?.gpu_names?.length
+              ? (() => {
+                  const gpu = pickGpu(monitor.system.gpu_names, monitor.system.vram_gb);
+                  return `${gpu.name} (${gpu.vram || 0} GB)`;
+                })()
+              : "N/A"}
+          </div>
+          <div className="list-meta">
+            {monitor?.system?.gpu_util !== null && monitor?.system?.gpu_util !== undefined
+              ? `Uso ${monitor.system.gpu_util.toFixed(0)}%`
+              : "Uso N/A"}
+            {monitor?.system?.gpu_temp_c !== null && monitor?.system?.gpu_temp_c !== undefined
+              ? ` · Temp ${monitor.system.gpu_temp_c.toFixed(0)}°C`
+              : ""}
+            {monitor?.system?.gpu_mem_used_gb !== null && monitor?.system?.gpu_mem_used_gb !== undefined
+              ? ` · VRAM ${monitor.system.gpu_mem_used_gb.toFixed(1)}/${(monitor.system.gpu_mem_total_gb || 0).toFixed(1)} GB`
+              : ""}
+          </div>
         </div>
       </section>
+
     </AppShell>
   );
 }
