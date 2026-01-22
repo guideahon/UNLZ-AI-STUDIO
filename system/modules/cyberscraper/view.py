@@ -157,7 +157,9 @@ class CyberScraperView(ctk.CTkFrame):
             if status_key:
                 self.status_value.configure(text=self.tr(status_key))
             else:
-                self.status_value.configure(text=self.tr("cyber_status_busy") if busy else self.tr("cyber_status_idle"))
+                self.status_value.configure(
+                    text=self.tr("status_in_progress") if busy else self.tr("cyber_status_idle")
+                )
         self.refresh_buttons()
 
     def log(self, message):

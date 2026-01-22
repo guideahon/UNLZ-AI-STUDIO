@@ -2,10 +2,12 @@ import customtkinter as ctk
 import logging
 import threading
 import os
+import subprocess
 from pathlib import Path
 from modules.base import StudioModule
 from tkinter import messagebox
 from PIL import Image
+import psutil
 
 class MonitorModule(StudioModule):
     def __init__(self, parent):
@@ -49,12 +51,52 @@ class MonitorView(ctk.CTkFrame):
             
             sys_info = self.pm.system_info
             
-            self.create_stat_card(hw_frame, "CPU", f"{sys_info.cpu_name}\n({sys_info.cpu_threads} Threads)", 0)
-            self.create_stat_card(hw_frame, "RAM", f"{sys_info.ram_gb:.1f} GB", 1)
+            cpu_usage = psutil.cpu_percent(interval=0.1)
+            cpu_temp = self._get_cpu_temp()
+            cpu_extra = f"Uso {cpu_usage:.0f}%"
+            if cpu_temp is not None:
+                cpu_extra += f" | Temp {cpu_temp:.0f}C"
+
+            ram = psutil.virtual_memory()
+            ram_extra = f"Usada {ram.used / (1024**3):.1f} GB | Libre {ram.available / (1024**3):.1f} GB | {ram.percent:.0f}%"
+
+            self.create_stat_card(
+                hw_frame,
+                "CPU",
+                f"{sys_info.cpu_name}\n({sys_info.cpu_threads} Threads)\n{cpu_extra}",
+                0,
+            )
+            self.create_stat_card(hw_frame, "RAM", f"{sys_info.ram_gb:.1f} GB\n{ram_extra}", 1)
             
             gpu_text = "N/A"
-            if sys_info.cuda_available:
-                gpu_text = f"{sys_info.gpu_names[0]} ({sys_info.vram_gb_per_gpu[0]:.1f} GB)"
+            if sys_info.gpu_names:
+                pairs = list(zip(sys_info.gpu_names, sys_info.vram_gb_per_gpu or []))
+                def rank_gpu(name, vram):
+                    name_low = name.lower()
+                    score = vram
+                    if "nvidia" in name_low:
+                        score += 1000.0
+                    if "amd" in name_low or "radeon" in name_low:
+                        score += 500.0
+                    if "intel" in name_low:
+                        score += 200.0
+                    if "virtual" in name_low or "microsoft" in name_low or "basic render" in name_low:
+                        score -= 1000.0
+                    return score
+                pairs.sort(key=lambda item: rank_gpu(item[0], item[1] if len(item) > 1 else 0.0), reverse=True)
+                name, vram = pairs[0][0], pairs[0][1] if len(pairs[0]) > 1 else 0.0
+                gpu_extra = ""
+                util, temp, mem_used, mem_total = self._get_gpu_stats()
+                if util is not None:
+                    gpu_extra += f"Uso {util:.0f}%"
+                if temp is not None:
+                    gpu_extra += f" | Temp {temp:.0f}C"
+                if mem_used is not None and mem_total is not None:
+                    gpu_extra += f" | VRAM {mem_used:.1f}/{mem_total:.1f} GB"
+                if gpu_extra:
+                    gpu_text = f"{name} ({vram:.1f} GB)\n{gpu_extra}"
+                else:
+                    gpu_text = f"{name} ({vram:.1f} GB)"
             self.create_stat_card(hw_frame, "GPU", gpu_text, 2)
 
             # --- Service Manager ---
@@ -90,6 +132,50 @@ class MonitorView(ctk.CTkFrame):
             except Exception:
                 pass
             self._refresh_job = None
+
+    def _get_cpu_temp(self):
+        try:
+            temps = psutil.sensors_temperatures()
+            if not temps:
+                return None
+            first_group = next(iter(temps.values()))
+            if not first_group:
+                return None
+            return first_group[0].current
+        except Exception:
+            return None
+
+    def _get_gpu_stats(self):
+        try:
+            cmd = [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ]
+            output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            return None, None, None, None
+        line = output.splitlines()[0] if output else ""
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 4:
+            return None, None, None, None
+        try:
+            util = float(parts[0])
+        except Exception:
+            util = None
+        try:
+            temp = float(parts[1])
+        except Exception:
+            temp = None
+        try:
+            mem_used = round(float(parts[2]) / 1024.0, 2)
+        except Exception:
+            mem_used = None
+        try:
+            mem_total = round(float(parts[3]) / 1024.0, 2)
+        except Exception:
+            mem_total = None
+        return util, temp, mem_used, mem_total
 
     def schedule_refresh(self):
         if not self.winfo_exists():
@@ -135,7 +221,13 @@ class MonitorView(ctk.CTkFrame):
             self.refresh_models(file_combo)
         
         # Status Label
-        lbl_status = ctk.CTkLabel(ctrl, text=self.app.tr("status_unknown"), font=ctk.CTkFont(weight="bold"))
+        lbl_status = ctk.CTkLabel(
+            ctrl,
+            text=self.app.tr("status_unknown"),
+            font=ctk.CTkFont(weight="bold"),
+            image=self.app.get_status_matrix_image(),
+            compound="left",
+        )
         lbl_status.pack(side="left", padx=10)
         
         # Buttons
@@ -200,12 +292,12 @@ class MonitorView(ctk.CTkFrame):
                     ui["btn_uninstall"].pack(side="right", padx=5)
                     
                     if running:
-                        ui["status"].configure(text="● " + tr("svc_running"), text_color="green")
+                        ui["status"].configure(text=tr("svc_running"), text_color="green")
                         ui["btn_action"].configure(text=tr("svc_stop"), fg_color="red", state="normal", command=lambda k=key: self.toggle_service(k))
                         ui["btn_action"].pack(side="left", padx=5)
                         if ui["combo"]: ui["combo"].configure(state="disabled")
                     else:
-                        ui["status"].configure(text="● " + tr("svc_stopped"), text_color="gray")
+                        ui["status"].configure(text=tr("svc_stopped"), text_color="gray")
                         ui["btn_action"].configure(text=tr("svc_start"), fg_color="green", state="normal", command=lambda k=key: self.toggle_service(k))
                         ui["btn_action"].pack(side="left", padx=5)
                         if ui["combo"]: ui["combo"].configure(state="normal")
@@ -253,7 +345,7 @@ class MonitorView(ctk.CTkFrame):
         tr = self.app.tr
         if self.manager.is_running(key):
             # Visually set state to stopping/loading for feedback
-            self.services_ui[key]["status"].configure(text="● " + tr("svc_loading"), text_color="orange")
+            self.services_ui[key]["status"].configure(text=tr("svc_loading"), text_color="orange")
             self.services_ui[key]["btn_action"].configure(state="disabled")
             
             self.manager.stop(key)
@@ -290,7 +382,7 @@ class MonitorView(ctk.CTkFrame):
                  config["model_path"] = str(model_path)
              
              # SET LOADING STATE VISUALLY
-             self.services_ui[key]["status"].configure(text="● " + tr("svc_loading"), text_color="orange")
+             self.services_ui[key]["status"].configure(text=tr("svc_loading"), text_color="orange")
              self.services_ui[key]["btn_action"].configure(state="disabled")
 
              threading.Thread(target=self._start_bg, args=(key, config)).start()

@@ -1,1 +1,17 @@
-["monitor", "llm_frontend", "inclu_ia", "gaussian", "research_assistant", "model_3d", "spotedit", "hy_motion", "neutts", "cyberscraper", "klein", "hyworld", "ml_sharp"]
+[
+  "monitor",
+  "llm_frontend",
+  "inclu_ia",
+  "gaussian",
+  "research_assistant",
+  "model_3d",
+  "spotedit",
+  "hy_motion",
+  "neutts",
+  "cyberscraper",
+  "klein",
+  "hyworld",
+  "ml_sharp",
+  "proedit",
+  "finetune_glm"
+]

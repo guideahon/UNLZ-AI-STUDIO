@@ -144,7 +144,9 @@ class MLSharpView(ctk.CTkFrame):
 
     def set_busy(self, busy):
         self._busy = busy
-        self.status_value.configure(text=self.tr("mlsharp_status_busy") if busy else self.tr("mlsharp_status_idle"))
+        self.status_value.configure(
+            text=self.tr("status_in_progress") if busy else self.tr("mlsharp_status_idle")
+        )
         self.refresh_buttons()
 
     def browse_input_file(self):

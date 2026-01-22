@@ -66,7 +66,13 @@ class LLMFrontendView(ctk.CTkFrame):
         header.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         
         ctk.CTkLabel(header, text=tr("lbl_server_port"), font=ctk.CTkFont(weight="bold")).pack(side="left", padx=10)
-        self.status_indicator = ctk.CTkLabel(header, text=f"● {tr('status_stopped')}", text_color="red")
+        self.status_indicator = ctk.CTkLabel(
+            header,
+            text=tr("status_stopped"),
+            text_color="red",
+            image=self.app.get_status_matrix_image(),
+            compound="left",
+        )
         self.status_indicator.pack(side="left")
         
         ctk.CTkLabel(header, text=tr("lbl_active_model"), font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(20, 5))
@@ -100,12 +106,12 @@ class LLMFrontendView(ctk.CTkFrame):
 
     def check_server_state(self):
         if self.manager.is_running("llm_chat"):
-            self.status_indicator.configure(text=f"● {self.app.tr('status_running')}", text_color="green")
+            self.status_indicator.configure(text=self.app.tr("status_running"), text_color="green")
             self.btn_load.configure(text=self.app.tr("btn_stop"), fg_color="red")
             self.chat_input.configure(state="normal")
             self.send_btn.configure(state="normal")
         else:
-            self.status_indicator.configure(text=f"● {self.app.tr('status_stopped')}", text_color="red")
+            self.status_indicator.configure(text=self.app.tr("status_stopped"), text_color="red")
             self.btn_load.configure(text=self.app.tr("btn_load"), fg_color="green")
             # We don't disable input to allow typing, but send will fail
             
@@ -295,6 +301,7 @@ class LLMFrontendView(ctk.CTkFrame):
             ("Llama 3.2 3B (Instruct)", "unsloth/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf"),
             ("Qwen 2.5 7B (Instruct)", "Qwen/Qwen2.5-7B-Instruct-GGUF", "qwen2.5-7b-instruct-q4_k_m.gguf"),
             ("Qwen 2.5 14B (Instruct)", "Qwen/Qwen2.5-14B-Instruct-GGUF", "qwen2.5-14b-instruct-q4_k_m.gguf"),
+            ("GLM 4.7 Flash", "unsloth/GLM-4.7-Flash-GGUF", "GLM-4.7-Flash-Q4_K_M.gguf"),
             ("Mistral 7B v0.3", "MaziyarPanahi/Mistral-7B-Instruct-v0.3-GGUF", "Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"),
             ("DeepSeek R1 Distill (8B)", "unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF", "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"),
             ("Phi-3.5 Mini", "microsoft/Phi-3.5-mini-instruct-gguf", "Phi-3.5-mini-instruct-Q4_K_M.gguf"),

@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import threading
 import time
+import subprocess
 from dataclasses import asdict, dataclass
 from copy import deepcopy
 from pathlib import Path
@@ -254,9 +256,84 @@ DEFAULT_PRESETS: List[ProfilePreset] = [
 
 
 def detect_system_info() -> SystemInfo:
+    def _query_windows_cpu_name() -> str:
+        ps = shutil.which("powershell") or shutil.which("pwsh")
+        if not ps:
+            return ""
+        cmd = [
+            ps,
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name | Select-Object -First 1",
+        ]
+        try:
+            output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL).strip()
+            return output
+        except Exception:
+            return ""
+
+    def _rank_gpu(name: str, vram: float) -> float:
+        lowered = name.lower()
+        score = vram
+        if "nvidia" in lowered:
+            score += 1000.0
+        if "amd" in lowered or "radeon" in lowered:
+            score += 500.0
+        if "intel" in lowered:
+            score += 200.0
+        if "virtual" in lowered or "microsoft" in lowered or "basic render" in lowered:
+            score -= 1000.0
+        return score
+
+    def _sort_gpus(names: List[str], vram: List[float]) -> Tuple[List[str], List[float]]:
+        pairs = list(zip(names, vram))
+        pairs.sort(key=lambda item: _rank_gpu(item[0], item[1]), reverse=True)
+        return [p[0] for p in pairs], [p[1] for p in pairs]
+
+    def _query_windows_gpu() -> Tuple[List[str], List[float]]:
+        ps = shutil.which("powershell") or shutil.which("pwsh")
+        if not ps:
+            return [], []
+        cmd = [
+            ps,
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json",
+        ]
+        try:
+            output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            return [], []
+        output = output.strip()
+        if not output:
+            return [], []
+        try:
+            data = json.loads(output)
+        except Exception:
+            return [], []
+        items = data if isinstance(data, list) else [data]
+        names: List[str] = []
+        vram: List[float] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("Name") or "").strip()
+            if not name:
+                continue
+            names.append(name)
+            try:
+                vram.append(round(float(item.get("AdapterRAM", 0)) / (1024**3), 2))
+            except Exception:
+                vram.append(0.0)
+        return _sort_gpus(names, vram)
+
     python_version = platform.python_version()
     platform_label = f"{platform.system()} {platform.release()}"
     cpu_name = platform.processor() or platform.machine()
+    if platform.system().lower() == "windows" and "family" in cpu_name.lower():
+        cpu_friendly = _query_windows_cpu_name()
+        if cpu_friendly:
+            cpu_name = cpu_friendly
     cpu_threads = psutil.cpu_count(logical=True) or 1
     ram_gb = round(psutil.virtual_memory().total / (1024**3), 2)
     gpu_names: List[str] = []
@@ -271,6 +348,10 @@ def detect_system_info() -> SystemInfo:
             props = torch.cuda.get_device_properties(i)
             gpu_names.append(props.name)
             vram_list.append(round(props.total_memory / (1024**3), 2))
+        gpu_names, vram_list = _sort_gpus(gpu_names, vram_list)
+    elif platform.system().lower() == "windows":
+        gpu_names, vram_list = _query_windows_gpu()
+        gpu_count = len(gpu_names)
 
     return SystemInfo(
         python_version=python_version,

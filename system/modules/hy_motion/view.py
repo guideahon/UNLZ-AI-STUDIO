@@ -149,7 +149,9 @@ class HYMotionView(ctk.CTkFrame):
     def set_busy(self, busy):
         self._busy = busy
         if self.status_value:
-            self.status_value.configure(text=self.tr("hymotion_status_busy") if busy else self.tr("hymotion_status_idle"))
+            self.status_value.configure(
+                text=self.tr("status_in_progress") if busy else self.tr("hymotion_status_idle")
+            )
         self.refresh_buttons()
 
     def install_backend(self):

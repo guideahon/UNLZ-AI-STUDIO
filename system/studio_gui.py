@@ -40,6 +40,7 @@ from modules.monitor import MonitorModule
 from modules.research_assistant import ResearchAssistantModule
 from modules.model_3d import Model3DModule
 from modules.spotedit import SpotEditModule
+from modules.finetune_glm import FinetuneGLMModule
 from modules.hy_motion import HYMotionModule
 from modules.proedit import ProEditModule
 from modules.neutts import NeuttsModule
@@ -55,6 +56,7 @@ if os.path.exists(THEME_PATH):
 ctk.set_appearance_mode("Dark")
 
 INSTALLED_MODULES_FILE = "installed_modules.json"
+FAVORITES_FILE = "favorites_modules.json"
 LANGUAGES_FILE = os.path.join(os.path.dirname(__file__), "assets", "languages.json")
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "data", "app_settings.json")
 
@@ -120,6 +122,7 @@ class StudioGUI(ctk.CTk):
             
         self.log_dir = log_dir
         self.installed_modules = self.load_installed()
+        self.favorite_modules = self.load_favorites()
         
         # Logging Setup
         self.log_queue = []
@@ -149,6 +152,8 @@ class StudioGUI(ctk.CTk):
         self.assets_path = os.path.join(os.path.dirname(__file__), "assets")
         self.icon_path = os.path.join(self.assets_path, "SOLO-LOGO-AZUL-HORIZONTAL-fondo-transparente.ico")
         self.logo_img_path = os.path.join(self.assets_path, "LOGO AZUL HORIZONTAL - fondo transparente.png")
+        self.status_logo_path = os.path.join(self.assets_path, "SOLO LOGO AZUL HORIZONTAL - fondo transparente.png")
+        self.status_matrix_image = self._build_status_matrix_image()
 
         # Window Setup
         self.title("UNLZ AI Studio")
@@ -259,6 +264,12 @@ class StudioGUI(ctk.CTk):
                 "desc_key": "mod_llm_desc",
                 "icon": "AI"
             },
+            "finetune_glm": {
+                "class": FinetuneGLMModule,
+                "title_key": "mod_finetune_glm_title",
+                "desc_key": "mod_finetune_glm_desc",
+                "icon": "FT"
+            },
             "inclu_ia": {
                 "class": IncluIAModule,
                 "title_key": "mod_incluia_title",
@@ -333,6 +344,31 @@ class StudioGUI(ctk.CTk):
         else:
             self.log_viewer_widget.grid()
             self.set_setting("show_logs", True)
+
+    def _build_status_matrix_image(self):
+        if not os.path.exists(self.status_logo_path):
+            return None
+        try:
+            tile = Image.open(self.status_logo_path).convert("RGBA")
+            tile.thumbnail((8, 8))
+            tile_w, tile_h = tile.size
+            cols = 3
+            rows = 3
+            padding = 2
+            grid_w = cols * tile_w + (cols - 1) * padding
+            grid_h = rows * tile_h + (rows - 1) * padding
+            canvas = Image.new("RGBA", (grid_w, grid_h), (0, 0, 0, 0))
+            for row in range(rows):
+                for col in range(cols):
+                    x = col * (tile_w + padding)
+                    y = row * (tile_h + padding)
+                    canvas.paste(tile, (x, y), tile)
+            return ctk.CTkImage(light_image=canvas, dark_image=canvas, size=(grid_w, grid_h))
+        except Exception:
+            return None
+
+    def get_status_matrix_image(self):
+        return self.status_matrix_image
 
     def register_log_viewer(self, viewer):
         pass # Deprecated
@@ -441,15 +477,38 @@ class StudioGUI(ctk.CTk):
                 pass
         return []
 
+    def load_favorites(self):
+        if os.path.exists(FAVORITES_FILE):
+            try:
+                with open(FAVORITES_FILE, 'r') as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return [str(x) for x in data][:3]
+            except:
+                pass
+        return []
+
     def save_installed(self):
         with open(INSTALLED_MODULES_FILE, 'w') as f:
             json.dump(self.installed_modules, f)
+
+    def save_favorites(self):
+        with open(FAVORITES_FILE, 'w') as f:
+            json.dump(self.favorite_modules[:3], f)
 
     def refresh_installed_modules(self):
         for widget in self.module_buttons_frame.winfo_children():
             widget.destroy()
 
-        for mod_key in self.installed_modules:
+        ordered = []
+        for key in self.favorite_modules:
+            if key in self.installed_modules:
+                ordered.append(key)
+        for key in self.installed_modules:
+            if key not in ordered:
+                ordered.append(key)
+
+        for mod_key in ordered:
             if mod_key in self.available_modules:
                 if mod_key not in self.loaded_modules:
                     cls = self.available_modules[mod_key]["class"]
@@ -459,12 +518,37 @@ class StudioGUI(ctk.CTk):
                 self.create_module_button(title, mod_key)
 
     def create_module_button(self, title, mod_key):
+        if mod_key in self.favorite_modules:
+            title = f"* {title}"
         btn = ctk.CTkButton(self.module_buttons_frame, text=title, 
                             command=lambda: self.open_module(mod_key), 
                             fg_color="transparent", text_color=("gray10", "gray90"), 
                             hover_color=("gray70", "gray30"), anchor="w",
                             font=ctk.CTkFont(size=14, weight="bold"))
         btn.pack(fill="x", padx=20, pady=2)
+        btn.bind("<Button-3>", lambda event, key=mod_key: self.show_favorite_menu(event, key))
+
+    def show_favorite_menu(self, event, mod_key):
+        menu = tk.Menu(self, tearoff=0)
+        if mod_key in self.favorite_modules:
+            menu.add_command(label=self.tr("fav_remove"), command=lambda: self.toggle_favorite(mod_key, False))
+        else:
+            menu.add_command(label=self.tr("fav_add"), command=lambda: self.toggle_favorite(mod_key, True))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def toggle_favorite(self, mod_key, add):
+        if add:
+            if mod_key in self.favorite_modules:
+                return
+            if len(self.favorite_modules) >= 3:
+                messagebox.showwarning(self.tr("status_error"), self.tr("fav_limit"))
+                return
+            self.favorite_modules.append(mod_key)
+        else:
+            if mod_key in self.favorite_modules:
+                self.favorite_modules.remove(mod_key)
+        self.save_favorites()
+        self.refresh_installed_modules()
 
     def open_module(self, mod_key):
         logging.info(f"Request to open module: {mod_key}")

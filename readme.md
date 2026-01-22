@@ -167,8 +167,12 @@ npm install
 npm run dev
 # Abrir http://localhost:3000
 ```
+El puente de integracion (API local) se ejecuta con:
+```powershell
+python system\web_bridge.py
+```
 Acceso rapido:
-- `system\run_web_ui.bat` (siempre disponible)
+- `system\run_web_ui.bat` (arranca Web UI + Web Bridge)
 - `UNLZ AI Studio Web.lnk` (atajo en la carpeta raiz)
 
 Si queres, puedo sumar telemetria basica de estado (CPU/RAM/GPU en tiempo real) o un boton de "Abrir docs" en la Home.
