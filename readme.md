@@ -47,37 +47,20 @@ Que la universidad pueda tener un servidor local donde docentes y estudiantes:
 ## Requisitos
 - Windows 10/11.
 - Python 3.10+.
-- Node.js 18+ (para la Web UI).
-- GPU NVIDIA recomendada (CUDA) para rendimiento.
-- `llama.cpp` instalado si vas a usar backend GGUF con `llama-server`.
+- Node.js 18+ (solo si vas a usar la Web UI).
+- GPU NVIDIA recomendada (CUDA) para mejor rendimiento.
+- `llama.cpp` si vas a usar backend GGUF con `llama-server`.
 
 ---
 
-## Instalación rápida
+## Instalacion (paso a paso para usuarios basicos)
 
-### 1) Modelos
-```powershell
-# LLM (GGUF) - Qwen3-Coder-30B-A3B-Instruct (Q5_K_M)
-hf download unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF `
-  --include "*Q5_K_M*.gguf" `
-  --local-dir "C:\models\qwen3-coder-30b"
+### Opcion 1: Instalador automatico (recomendado)
+1) Abrir la carpeta del repo.
+2) Ejecutar `install.bat`.
+3) Esperar a que termine.
 
-# VLM (safetensors para LMDeploy) - Qwen2.5-VL-7B-Instruct
-hf download Qwen/Qwen2.5-VL-7B-Instruct `
-  --local-dir "C:\models\qwen2.5-vl-7b-hf"
-
-# LLM (perfil bajo/CPU) - Qwen2.5-Coder-7B-Instruct
-hf download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF `
-  --include "qwen2.5-coder-7b-instruct-q4_k_m.gguf" `
-  --local-dir "C:\models\qwen2.5-coder-7b"
-
-# Piper (TTS) - voz es_AR/daniela/high
-hf download rhasspy/piper-voices `
-  --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx*" `
-  --local-dir "C:\piper\voices\es_AR\daniela_high"
-```
-
-### 2) Dependencias
+### Opcion 2: Manual (si preferis controlar cada paso)
 ```powershell
 # llama.cpp
 winget install llama.cpp
@@ -88,17 +71,46 @@ pip install -U lmdeploy
 pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 pip install -U huggingface_hub transformers accelerate pillow requests
 
-# GUI y módulos
+# GUI y modulos
 pip install customtkinter flask flask-socketio SpeechRecognition pyaudio
+
+# Web UI (opcional)
+cd system\web_ui
+npm install
+```
+
+### Modelos (opcional pero recomendado)
+```powershell
+# LLM (GGUF) - Qwen3-Coder-30B-A3B-Instruct (Q5_K_M)
+hf download unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF `
+  --include "*Q5_K_M*.gguf" `
+  --local-dir "C:\models\qwen3-coder-30b"
+
+# VLM - Qwen2.5-VL-7B-Instruct
+hf download Qwen/Qwen2.5-VL-7B-Instruct `
+  --local-dir "C:\models\qwen2.5-vl-7b-hf"
+
+# LLM (perfil bajo/CPU) - Qwen2.5-Coder-7B-Instruct
+hf download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF `
+  --include "qwen2.5-coder-7b-instruct-q4_k_m.gguf" `
+  --local-dir "C:\models\qwen2.5-coder-7b"
 ```
 
 Rutas esperadas por el runtime:
 - GGUF 30B: `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf`
 - GGUF 7B: `C:\models\qwen2.5-coder-7b\qwen2.5-coder-7b-instruct-q4_k_m.gguf`
 - VLM: `C:\models\qwen2.5-vl-7b-hf`
-- Piper: `C:\piper\voices\es_AR\daniela_high\...`
 
 ---
+
+## Reset a valores por defecto
+Para reiniciar la configuracion (solo `app_settings.json`):
+```powershell
+reset_defaults.bat
+```
+
+---
+
 
 ## Ejecución
 
