@@ -1,178 +1,251 @@
 ![Logo Institucional](https://github.com/JonatanBogadoUNLZ/PPS-Jonatan-Bogado/blob/9952aac097aca83a1aadfc26679fc7ec57369d82/LOGO%20AZUL%20HORIZONTAL%20-%20fondo%20transparente.png)
 
-# Universidad Nacional de Lomas de Zamora – Facultad de Ingeniería
-## UNLZ-AI-STUDIO
----
-## Objetivo del repositorio
+# Universidad Nacional de Lomas de Zamora - Facultad de Ingeniería
+## UNLZ AI Studio
 
-Uso educativo y de laboratorio
-Que una universidad (como la UNLZ) pueda tener un servidor local donde docentes y estudiantes:
-
-Hagan TPs y prototipos con LLMs/VLMs.
-
-Prueben chatbots, asistentes de programación, análisis de imágenes, STT y TTS.
-
-Programen contra una sola API sin importar qué modelo o backend hay por detrás.
-
-🛠️ Simplificar el self-hosting en PCs reales
-
-Detecta CPU/RAM/GPU y elige automáticamente un perfil (alto, medio, baja, cpu).
-
-Configura parámetros de llama.cpp (ctx, n-gpu-layers, batch, etc.) según el equipo.
-
-Evita que llama-server y lmdeploy peleen por la VRAM (auto-switch).
-
-🧩 Ofrecer una puerta de entrada clara para hobbistas
-
-Guía paso a paso para instalar modelos, dependencias y TTS en Windows.
-
-Endpoints listos para consumir desde Python, PowerShell, ESP32, etc.
-
-Ejemplos concretos de uso: texto→texto, imagen+texto, audio→texto→voz.
-
-🖥️ Dar una interfaz “humana” para operar el servidor
-
-GUI en Tkinter (estilo Ingeniería) y **Web UI (Next.js)** para:
-
-Ver hardware y perfil activo.
-
-Levantar/apagar servidores.
-
-Activar/desactivar endpoints.
-
-Ajustar presets y modelos personalizados.
+Plataforma local para investigación, docencia y prototipado con modelos de IA. Permite operar LLM/VLM/STT/TTS en un solo servidor, con GUI de escritorio y Web UI, y perfiles automáticos según hardware.
 
 ---
 
-## 🚀 Arquitectura Modular
-
-UNLZ-AI-STUDIO cuenta con un sistema de **Módulos Pluggables** que permite extender la funcionalidad de la plataforma. Los módulos pueden instalarse desde la **GUI** (o Web UI) y se encuentran en la carpeta `modules/`.
-
-### Módulos Incluidos
-
-#### 1. Gaussian Splatting (Visualización 3D)
-- **Ruta**: `modules/gaussian/`
-- **Funcionalidad**: Permite crear escenas 3D a partir de imágenes utilizando **SharpSplat**.
-- **Interfaz**: Visor 3D interactivo integrado en la aplicación.
-
-#### 2. LLM Frontend (Chat & Manager)
-- **Ruta**: `modules/llm_frontend/`
-- **Funcionalidad**:
-    - **Chat**: Interfaz gráfica para conversar con los modelos locales servidos por `gateway.py`.
-    - **Gestor de Modelos**: Escanea tu carpeta de modelos (`C:\models`) y permite cambiar el modelo activo con un clic.
-    - **Descargas**: Descarga modelos GGUF directamente desde Hugging Face usando RepoID.
-
-#### 3. Inclu-IA (Subtitulado en Tiempo Real)
-- **Ruta**: `modules/inclu_ia/`
-- **Descripción**: Sistema de accesibilidad para aulas.
-- **Funcionamiento**: Convierte tu PC en un servidor de subtítulos. Captura audio del micrófono, lo transcribe con IA (Faster-Whisper) y lo distribuye vía Web (Wi-Fi local) a los dispositivos de los alumnos.
-- **Origen**: Adaptación del proyecto homónimo para Raspberry Pi.
+## Objetivo
+Que la universidad pueda tener un servidor local donde docentes y estudiantes:
+- Armen TPs y prototipos con LLMs/VLMs.
+- Prueben chatbots, asistentes de programación, análisis de imágenes, STT y TTS.
+- Programen contra una sola API sin importar el backend.
+- Tengan una interfaz clara para operar servicios sin tocar consola.
 
 ---
 
-## 🚀 API Gateway
-
-El `gateway.py` sigue siendo el núcleo que gestiona los procesos pesados:
-- **/llm** – texto↔texto con **llama.cpp**
-- **/clm** – texto↔texto con **HF Transformers**
-- **/vlm** – imagen+prompt con **LMDeploy**
-- **/alm** – audio→texto→LLM→voz
-- **/slm** – streaming audio/texto
+## Características principales
+- Detección de CPU/RAM/GPU y presets automáticos de ejecución.
+- Control de servicios desde GUI (Tkinter) y Web UI (Next.js).
+- Arquitectura modular con instalación desde la interfaz.
+- Web Bridge para exponer la API del runtime local.
+- Compatibilidad con modelos GGUF y backends de visión/audio.
 
 ---
 
-## Ajustes automaticos de hardware
-
-Desde `gateway.py` ahora se detectan CPU, RAM y GPU al iniciar, y se elige el preset mas apropiado para `llama-server`. Los perfiles principales son:
-- `ultra` y `alto`: equipos con >=16 GB de VRAM y 64+ GB de RAM, usan Qwen3-Coder-30B con mas capas en GPU y contexto amplio.
-- `balanceado` y `medio`: GPUs de 8 a 12 GB con 32-48 GB de RAM, priorizan Qwen3-Coder-14B y ajustan `--n-gpu-layers` para evitar OOM.
-- `baja`: pensado para RTX 2060/3050 (6 GB) con 24-32 GB de RAM.
-- `cpu`: modo de emergencia cuando no hay GPU o no hay espacio de VRAM; usa **Qwen2.5-Coder-7B**.
+## Arquitectura (alto nivel)
+- `system/gateway.py`: orquestador principal para procesos de IA.
+- `system/process_manager.py`: arranque/parada de servicios y control de recursos.
+- `system/studio_gui.py`: GUI de escritorio (Tkinter).
+- `system/web_bridge.py`: puente API para la Web UI.
+- `system/web_ui/`: interfaz Next.js.
+- `system/modules/`: módulos plug-and-play.
 
 ---
 
-## 📦 Instalación
+## Estructura del repositorio
+- `system/`: runtime, gateway, GUI, assets, módulos.
+- `system/web_ui/`: aplicación web (Next.js).
+- `system/assets/`: logos, tema, idiomas.
+- `system/data/`: configuraciones y datos de usuario.
+- `docs/`: documentación adicional.
 
-> **PowerShell:** el continuador de línea es el **backtick** `` ` `` y debe ir como **último carácter** (sin espacios después).
+---
+
+## Requisitos
+- Windows 10/11.
+- Python 3.10+.
+- Node.js 18+ (para la Web UI).
+- GPU NVIDIA recomendada (CUDA) para rendimiento.
+- `llama.cpp` instalado si vas a usar backend GGUF con `llama-server`.
+
+---
+
+## Instalación rápida
 
 ### 1) Modelos
-
 ```powershell
-# LLM (GGUF) – Qwen3-Coder-30B-A3B-Instruct (Q5_K_M)
+# LLM (GGUF) - Qwen3-Coder-30B-A3B-Instruct (Q5_K_M)
 hf download unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF `
   --include "*Q5_K_M*.gguf" `
   --local-dir "C:\models\qwen3-coder-30b"
 
-# VLM (safetensors oficial para LMDeploy) – Qwen2.5-VL-7B-Instruct
+# VLM (safetensors para LMDeploy) - Qwen2.5-VL-7B-Instruct
 hf download Qwen/Qwen2.5-VL-7B-Instruct `
   --local-dir "C:\models\qwen2.5-vl-7b-hf"
 
-# LLM (Perfil Bajo/CPU) - Qwen2.5-Coder-7B-Instruct
+# LLM (perfil bajo/CPU) - Qwen2.5-Coder-7B-Instruct
 hf download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF `
   --include "qwen2.5-coder-7b-instruct-q4_k_m.gguf" `
   --local-dir "C:\models\qwen2.5-coder-7b"
 
-# Piper: modelo + config (ambos necesarios) – voz es_AR/daniela/high
+# Piper (TTS) - voz es_AR/daniela/high
 hf download rhasspy/piper-voices `
   --include "es/es_AR/daniela/high/es_AR-daniela-high.onnx*" `
   --local-dir "C:\piper\voices\es_AR\daniela_high"
 ```
 
 ### 2) Dependencias
-
 ```powershell
 # llama.cpp
 winget install llama.cpp
 
-# Python requirements
+# Python runtime
 pip install -U fastapi uvicorn httpx psutil python-multipart faster-whisper
 pip install -U lmdeploy
 pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio
 pip install -U huggingface_hub transformers accelerate pillow requests
 
-# GUI & Modules
+# GUI y módulos
 pip install customtkinter flask flask-socketio SpeechRecognition pyaudio
 ```
 
-**Rutas esperadas por el gateway:**
-- **GGUF 30B:** `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf`
-- **GGUF 7B:** `C:\models\qwen2.5-coder-7b\qwen2.5-coder-7b-instruct-q4_k_m.gguf`
-- **VLM:**  `C:\models\qwen2.5-vl-7b-hf`
-- **Piper:** `C:\piper\voices\es_AR\daniela_high\...`
+Rutas esperadas por el runtime:
+- GGUF 30B: `C:\models\qwen3-coder-30b\Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf`
+- GGUF 7B: `C:\models\qwen2.5-coder-7b\qwen2.5-coder-7b-instruct-q4_k_m.gguf`
+- VLM: `C:\models\qwen2.5-vl-7b-hf`
+- Piper: `C:\piper\voices\es_AR\daniela_high\...`
 
 ---
 
-## 🧪 Ejemplos de uso
+## Ejecución
 
-### LLM (Perfil Bajo - Qwen2.5 7B)
+### GUI de escritorio (Tkinter)
 ```powershell
-$body = @{
-  model = "qwen2.5-coder-7b"
-  messages = @(
-    @{ role="system"; content="You are an expert in Finite element analysis." },
-    @{ role="user";   content="Explica la diferencia entre analisis lineal y no lineal" }
-  )
-} | ConvertTo-Json -Depth 5
-
-$web = Invoke-WebRequest -Uri "http://localhost:8000/llm" -Method Post -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType "application/json; charset=utf-8" 
-$response = $web.Content | ConvertFrom-Json 
-Write-Output $response.choices[0].message.content
+python system\studio_gui.py
 ```
+También podés usar los accesos directos:
+- `UNLZ AI Studio.lnk`
 
-### Web UI (Nueva Migración)
-Para acceder a la nueva interfaz web:
+### Web UI (Next.js)
 ```powershell
 cd system\web_ui
 npm install
 npm run dev
-# Abrir http://localhost:3000
 ```
-El puente de integracion (API local) se ejecuta con:
+Luego abrir: `http://localhost:3000`
+
+El bridge API se ejecuta con:
 ```powershell
 python system\web_bridge.py
 ```
-Acceso rapido:
-- `system\run_web_ui.bat` (arranca Web UI + Web Bridge)
-- `UNLZ AI Studio Web.lnk` (atajo en la carpeta raiz)
+Acceso rápido:
+- `system\run_web_ui.bat` (Web UI + Web Bridge)
+- `UNLZ AI Studio Web.lnk`
 
-Si queres, puedo sumar telemetria basica de estado (CPU/RAM/GPU en tiempo real) o un boton de "Abrir docs" en la Home.
+---
+
+## Endpoints (gateway)
+Principales rutas expuestas por el runtime:
+- `/llm`: texto -> texto (llama.cpp)
+- `/clm`: texto -> texto (HF Transformers)
+- `/vlm`: imagen + prompt
+- `/alm`: audio -> texto -> LLM -> voz
+- `/slm`: streaming audio/texto
+
+---
+
+## Módulos (detalle y autoría)
+Los módulos se instalan desde la GUI o la Web UI. Código en `system/modules/`.
+
+### Monitor (Endpoints de IA)
+- Autor original: UNLZ AI Studio.
+- Descripción: panel para ver hardware y gestionar servicios LLM/VLM/Audio.
+- Funcionamiento: consulta el estado vía Web Bridge y dispara acciones `/services/*`.
+- Uso en la app: Web UI > Monitor (iniciar/detener, instalar/desinstalar, seleccionar modelo).
+
+### Gaussian Splatting (SharpSplat)
+- Autor original: Apple (Sharp/SharpSplat, modelo publicado por Apple).
+- Descripción: genera splats gaussianos 3D desde imágenes o video.
+- Funcionamiento: usa el CLI `sharp` y el modelo `sharp_2572gikvuh.pt`.
+- Uso en la app: elegir input, generar splat y abrir salida/visor.
+
+### ML-SHARP
+- Autor original: Apple (`https://github.com/apple/ml-sharp`).
+- Descripción: síntesis monocular rápida con splats gaussianos.
+- Funcionamiento: ejecuta `sharp predict` con selección de dispositivo y render opcional.
+- Uso en la app: instalar dependencias, elegir input/salida, correr inferencia.
+
+### LLM Frontend (Chat & Manager)
+- Autor original: UNLZ AI Studio.
+- Descripción: chat local con modelos GGUF + gestor de modelos.
+- Funcionamiento: inicia el servidor local `llm_chat` y consulta `/v1/chat/completions`.
+- Uso en la app: elegir modelo, iniciar servidor, chatear y descargar modelos.
+
+### Fine-tune GLM-4.7
+- Autor original: Unsloth (pipeline) + modelo base `unsloth/GLM-4.7-Flash`.
+- Descripción: ajuste fino local con LoRA y export a GGUF.
+- Funcionamiento: script `system/data/finetune_glm/finetune_glm_4_7_flash.py`.
+- Uso en la app: cargar dataset, ejecutar entrenamiento y abrir carpeta de salida.
+
+### Inclu-IA
+- Autor original: UNLZ AI Studio (adaptación local del proyecto Inclu-IA).
+- Descripción: subtitulado y accesibilidad en tiempo real para aulas.
+- Funcionamiento: servidor local que captura micrófono, transcribe y publica vía web.
+- Uso en la app: iniciar servidor y abrir la interfaz web para alumnos.
+
+### Asistente de Investigación
+- Autor original: UNLZ AI Studio.
+- Descripción: gestor de bibliografía local con resúmenes y citas.
+- Funcionamiento: indexa PDFs, genera resúmenes extractivos y búsqueda TF-IDF.
+- Uso en la app: importar PDFs, construir índice, consultar y copiar citas.
+
+### SpotEdit
+- Autor original: Biangbiang0321 (`https://github.com/Biangbiang0321/SpotEdit`).
+- Descripción: edición local por regiones con Diffusion Transformers.
+- Funcionamiento: descarga backend, prepara entorno y ejecuta edición por máscara.
+- Uso en la app: seleccionar imagen, marcar región y ejecutar edición.
+
+### Flux 2 Klein
+- Autor original: Black Forest Labs (`https://huggingface.co/black-forest-labs/FLUX.2-klein-4B`).
+- Descripción: generación de imágenes texto-a-imagen.
+- Funcionamiento: descarga modelo, prepara entorno y ejecuta prompt.
+- Uso en la app: definir prompt, parámetros y generar.
+
+### HunyuanWorld-Mirror
+- Autor original: Tencent Hunyuan (`https://github.com/Tencent-Hunyuan/HunyuanWorld-Mirror`).
+- Descripción: reconstrucción 3D con el stack HunyuanWorld.
+- Funcionamiento: clona backend y ejecuta demo/inferencia.
+- Uso en la app: instalar backend, descargar pesos y correr generación.
+
+### CyberScraper 2077
+- Autor original: itsOwen (`https://github.com/itsOwen/CyberScraper-2077`).
+- Descripción: scraping con Streamlit y LLMs.
+- Funcionamiento: instala backend, dependencias y levanta la UI web.
+- Uso en la app: instalar backend, iniciar servidor y abrir navegador.
+
+### HY-Motion 1.0
+- Autor original: Tencent Hunyuan (`https://github.com/Tencent-Hunyuan/HY-Motion-1.0`).
+- Descripción: generación y edición de movimiento.
+- Funcionamiento: clona repo, instala deps y ejecuta pipeline.
+- Uso en la app: instalar, descargar weights y correr generación.
+
+### NeuTTS
+- Autor original: Neuphonic (`https://github.com/neuphonic/neutts`).
+- Descripción: texto a voz con variantes Air/Nano.
+- Funcionamiento: instala backend y dependencias, ejecuta generación local.
+- Uso en la app: seleccionar variante, generar audio y abrir salida.
+
+### ProEdit
+- Autor original: iSEE-Laboratory (`https://github.com/iSEE-Laboratory/ProEdit`).
+- Descripción: edición avanzada basada en inversión para imagen y video.
+- Funcionamiento: backend con modelos y scripts de edición guiada.
+- Uso en la app: instalar backend, preparar input y ejecutar edición.
+
+### Generación de modelo 3D
+- Autor original: Stepfun AI (`https://github.com/stepfun-ai/Step1X-3D`), Tencent (`https://github.com/Tencent/Hunyuan3D-2`), Meta/FAIR (`https://github.com/facebookresearch/sam-3d-objects`).
+- Descripción: crea modelos 3D desde una o más imágenes o video.
+- Funcionamiento: permite instalar backends, bajar pesos y ejecutar por backend.
+- Uso en la app: elegir backend, input y ejecutar generación.
+
+---
+
+## Configuración
+- Carpeta de modelos GGUF: variable `LLAMA_MODEL_DIR` o desde la UI.
+- Idioma y tema: `system/data/app_settings.json`.
+- Logs: `system/logs/` y `system/web_ui/.next/`.
+
+---
+
+## Troubleshooting rápido
+- No aparecen modelos: verificá rutas y extensiones `.gguf`.
+- Fallos de GPU: reduce modelo o perfil, revisá VRAM disponible.
+- Web UI no responde: asegurate de tener `web_bridge.py` corriendo.
+- Errores de arranque: revisar `system/logs/startup.log`.
+
+---
+
+## Notas
+Este proyecto está orientado a uso educativo y de laboratorio. Si querés sumar módulos o integraciones, revisá `system/modules/` y los ejemplos en `system/Ejemplos/`.

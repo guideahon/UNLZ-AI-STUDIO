@@ -16,6 +16,9 @@ const cormorant = Cormorant_Garamond({
 export const metadata: Metadata = {
   title: "UNLZ AI Studio",
   description: "Next Gen AI Platform",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({
