@@ -48,7 +48,6 @@ AVAILABLE_MODULES = [
     {"key": "monitor", "title_key": "mod_monitor_title", "desc_key": "mod_monitor_desc", "category": "core"},
     {"key": "llm_frontend", "title_key": "mod_llm_title", "desc_key": "mod_llm_desc", "category": "core"},
     {"key": "inclu_ia", "title_key": "mod_incluia_title", "desc_key": "mod_incluia_desc", "category": "core"},
-    {"key": "gaussian", "title_key": "mod_gaussian_title", "desc_key": "mod_gaussian_desc", "category": "vision"},
     {"key": "ml_sharp", "title_key": "mod_mlsharp_title", "desc_key": "mod_mlsharp_desc", "category": "vision"},
     {"key": "model_3d", "title_key": "mod_model3d_title", "desc_key": "mod_model3d_desc", "category": "vision"},
     {"key": "spotedit", "title_key": "mod_spotedit_title", "desc_key": "mod_spotedit_desc", "category": "vision"},
@@ -78,8 +77,6 @@ MODULE_PROCS: Dict[str, subprocess.Popen] = {}
 MODULE_PROC_LOCK = threading.Lock()
 MODULE_STATE: Dict[str, Dict] = {}
 
-GAUSSIAN_OUTPUT_BASE = BASE_DIR / "modules" / "gaussian" / "output"
-GAUSSIAN_VIEWER_TEMPLATE = BASE_DIR / "modules" / "gaussian" / "viewer_template.html"
 CYBER_BACKEND_DIR = BASE_DIR / "ai-backends" / "CyberScraper-2077"
 HYMOTION_BACKEND_DIR = BASE_DIR / "ai-backends" / "HY-Motion-1.0"
 HYMOTION_OUTPUT_DIR = BASE_DIR / "hymotion-out"
@@ -90,6 +87,7 @@ KLEIN_OUTPUT_DIR = BASE_DIR / "klein-out"
 INCLUIA_SERVER_PATH = BASE_DIR / "modules" / "inclu_ia" / "software" / "server.py"
 MLSHARP_BACKEND_DIR = BASE_DIR / "ai-backends" / "ml-sharp"
 MLSHARP_OUTPUT_DIR = BASE_DIR / "ml-sharp-out"
+MLSHARP_VIEWER_TEMPLATE = BASE_DIR / "modules" / "ml_sharp" / "viewer_template.html"
 MODEL3D_DATA_DIR = BASE_DIR / "data" / "model_3d"
 MODEL3D_CONFIG_PATH = MODEL3D_DATA_DIR / "config.json"
 MODEL3D_OUTPUT_BASE = BASE_DIR.parent / "system" / "3d-out"
@@ -697,7 +695,7 @@ def _model3d_write_sam3d_script(image_path: str, mask_path: str, output_dir: str
     return script_path
 
 
-def _start_http_server(directory: Path) -> str:
+def _start_http_server(directory: Path, module_key: str, viewer_path: str) -> str:
     port = 8000
     while port < 8100:
         try:
@@ -708,13 +706,13 @@ def _start_http_server(directory: Path) -> str:
             break
     python_exe = sys.executable.replace("pythonw.exe", "python.exe")
     cmd = [python_exe, "-m", "http.server", str(port), "--directory", str(directory)]
-    _run_cmd(f"gaussian_server_{port}", cmd, cwd=directory)
-    return f"http://localhost:{port}/gaussians/index.html"
+    _run_cmd(f"{module_key}_server_{port}", cmd, cwd=directory)
+    return f"http://localhost:{port}/{viewer_path}"
 
 
-def _gaussian_list_scenes() -> List[Dict]:
+def _mlsharp_list_scenes() -> List[Dict]:
     scenes = []
-    output_base = GAUSSIAN_OUTPUT_BASE
+    output_base = MLSHARP_OUTPUT_DIR
     output_base.mkdir(parents=True, exist_ok=True)
     for path in output_base.iterdir():
         if path.is_dir() and path.name.startswith("splat_"):
@@ -731,7 +729,7 @@ def _gaussian_list_scenes() -> List[Dict]:
     return scenes
 
 
-def _gaussian_setup_viewer(output_dir: Path) -> None:
+def _mlsharp_setup_viewer(output_dir: Path) -> None:
     try:
         gaussians_dir = output_dir / "gaussians"
         gaussians_dir.mkdir(parents=True, exist_ok=True)
@@ -739,18 +737,18 @@ def _gaussian_setup_viewer(output_dir: Path) -> None:
         scene_dst = gaussians_dir / "scene.ply"
         ply_files = [f for f in output_dir.iterdir() if f.suffix == ".ply"]
         if not ply_files:
-            _append_log("gaussian", "Warning: No .ply file found in output.")
+            _append_log("ml_sharp", "Warning: No .ply file found in output.")
             return
         src_ply = ply_files[0]
         shutil.move(str(src_ply), str(scene_dst))
-        _append_log("gaussian", f"Moved {src_ply.name} to {scene_dst}")
-        if GAUSSIAN_VIEWER_TEMPLATE.exists():
-            shutil.copy(str(GAUSSIAN_VIEWER_TEMPLATE), str(viewer_dst))
-            _append_log("gaussian", f"Viewer created at: {viewer_dst}")
+        _append_log("ml_sharp", f"Moved {src_ply.name} to {scene_dst}")
+        if MLSHARP_VIEWER_TEMPLATE.exists():
+            shutil.copy(str(MLSHARP_VIEWER_TEMPLATE), str(viewer_dst))
+            _append_log("ml_sharp", f"Viewer created at: {viewer_dst}")
         else:
-            _append_log("gaussian", f"Error: viewer_template.html not found at {GAUSSIAN_VIEWER_TEMPLATE}")
+            _append_log("ml_sharp", f"Error: viewer_template.html not found at {MLSHARP_VIEWER_TEMPLATE}")
     except Exception as exc:
-        _append_log("gaussian", f"Error setting up viewer: {exc}")
+        _append_log("ml_sharp", f"Error setting up viewer: {exc}")
 
 
 def _load_json(path: Path, default):
@@ -1488,80 +1486,6 @@ def uninstall_service(action: ServiceAction):
     return {"ok": True}
 
 
-@app.get("/modules/gaussian/state")
-def gaussian_state():
-    scenes = _gaussian_list_scenes()
-    current = MODULE_STATE.get("gaussian_last_output")
-    return {
-        "scenes": scenes,
-        "running": _is_running("gaussian"),
-        "last_output": current,
-    }
-
-
-@app.post("/modules/gaussian/run")
-def gaussian_run(payload: GaussianRun):
-    input_path = Path(payload.input_path)
-    if not input_path.exists():
-        raise HTTPException(status_code=400, detail="Input path not found")
-    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-    output_dir = GAUSSIAN_OUTPUT_BASE / f"splat_{timestamp}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    MODULE_STATE["gaussian_last_output"] = str(output_dir)
-    cmd = ["sharp", "predict", "-i", str(input_path), "-o", str(output_dir)]
-
-    def worker():
-        _append_log("gaussian", f"$ {' '.join(cmd)}")
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(BASE_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-            )
-            with MODULE_PROC_LOCK:
-                MODULE_PROCS["gaussian"] = proc
-            if proc.stdout:
-                for line in proc.stdout:
-                    _append_log("gaussian", line.rstrip())
-            proc.wait()
-            _append_log("gaussian", f"[done] exit={proc.returncode}")
-        except Exception as exc:
-            _append_log("gaussian", f"[error] {exc}")
-        finally:
-            with MODULE_PROC_LOCK:
-                MODULE_PROCS.pop("gaussian", None)
-        _gaussian_setup_viewer(output_dir)
-
-    threading.Thread(target=worker, daemon=True).start()
-    return {"output_dir": str(output_dir)}
-
-
-@app.post("/modules/gaussian/open")
-def gaussian_open(payload: GaussianScene):
-    target = Path(payload.path) / "gaussians"
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="Output folder not found")
-    os.startfile(str(target))
-    return {"ok": True}
-
-
-@app.post("/modules/gaussian/view")
-def gaussian_view(payload: GaussianScene):
-    target = Path(payload.path)
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="Output folder not found")
-    url = _start_http_server(target)
-    return {"url": url}
-
-
-@app.get("/modules/gaussian/logs")
-def gaussian_logs(lines: int = 200):
-    return {"lines": _tail_log("gaussian", lines)}
-
-
 @app.get("/modules/cyberscraper/state")
 def cyberscraper_state():
     installed = CYBER_BACKEND_DIR.exists()
@@ -2076,11 +2000,15 @@ def llm_frontend_logs(lines: int = 200):
 
 @app.get("/modules/ml_sharp/state")
 def mlsharp_state():
+    scenes = _mlsharp_list_scenes()
+    current = MODULE_STATE.get("ml_sharp_last_output")
     return {
         "installed": MLSHARP_BACKEND_DIR.exists(),
         "deps_installed": (MLSHARP_BACKEND_DIR / ".deps_installed").exists(),
         "output_dir": str(MLSHARP_OUTPUT_DIR),
         "running": _is_running("ml_sharp"),
+        "scenes": scenes,
+        "last_output": current,
     }
 
 
@@ -2117,14 +2045,45 @@ def mlsharp_run(payload: MLSharpRun):
     sharp_cmd = _mlsharp_find_sharp()
     if not sharp_cmd:
         raise HTTPException(status_code=404, detail="sharp command not found")
-    output_dir = Path(payload.output_dir or str(MLSHARP_OUTPUT_DIR))
+    if payload.output_dir:
+        output_dir = Path(payload.output_dir)
+    else:
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        output_dir = MLSHARP_OUTPUT_DIR / f"splat_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
+    MODULE_STATE["ml_sharp_last_output"] = str(output_dir)
     cmd = [sharp_cmd, "predict", "-i", str(input_path), "-o", str(output_dir)]
     if payload.render:
         cmd.append("--render")
     if payload.device and payload.device != "default":
         cmd.extend(["--device", payload.device])
-    _run_cmd("ml_sharp", cmd, cwd=MLSHARP_BACKEND_DIR)
+
+    def worker():
+        _append_log("ml_sharp", f"$ {' '.join(cmd)}")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(MLSHARP_BACKEND_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+            )
+            with MODULE_PROC_LOCK:
+                MODULE_PROCS["ml_sharp"] = proc
+            if proc.stdout:
+                for line in proc.stdout:
+                    _append_log("ml_sharp", line.rstrip())
+            proc.wait()
+            _append_log("ml_sharp", f"[done] exit={proc.returncode}")
+        except Exception as exc:
+            _append_log("ml_sharp", f"[error] {exc}")
+        finally:
+            with MODULE_PROC_LOCK:
+                MODULE_PROCS.pop("ml_sharp", None)
+        _mlsharp_setup_viewer(output_dir)
+
+    threading.Thread(target=worker, daemon=True).start()
     return {"ok": True, "output_dir": str(output_dir)}
 
 
@@ -2133,8 +2092,27 @@ def mlsharp_open(payload: MLSharpOpen):
     target = Path(payload.path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Output folder not found")
+    gaussians_dir = target / "gaussians"
+    os.startfile(str(gaussians_dir if gaussians_dir.exists() else target))
+    return {"ok": True}
+
+
+@app.post("/modules/ml_sharp/open_scene")
+def mlsharp_open_scene(payload: MLSharpOpen):
+    target = Path(payload.path) / "gaussians"
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Output folder not found")
     os.startfile(str(target))
     return {"ok": True}
+
+
+@app.post("/modules/ml_sharp/view_scene")
+def mlsharp_view_scene(payload: MLSharpOpen):
+    target = Path(payload.path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Output folder not found")
+    url = _start_http_server(target, "ml_sharp", "gaussians/index.html")
+    return {"url": url}
 
 
 @app.get("/modules/ml_sharp/logs")

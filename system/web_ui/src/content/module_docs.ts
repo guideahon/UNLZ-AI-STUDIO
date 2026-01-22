@@ -81,50 +81,28 @@ export const MODULE_DOCS: Record<string, ModuleDoc> = {
       "Guardar la transcripcion si se requiere.",
     ],
   },
-  gaussian: {
-    title: "Gaussian Splatting",
-    summary:
-      "Pipeline para crear escenas 3D con gaussian splats a partir de imagenes o video.",
-    what_is:
-      "Herramienta de reconstruccion 3D que genera dataset, entrena splats y produce un visor interactivo.",
-    purpose:
-      "Convertir capturas reales en escenas navegables para docencia, demos o prototipos.",
-    use_cases: [
-      "Digitalizacion de objetos o espacios.",
-      "Previsualizacion 3D rapida para proyectos.",
-      "Material didactico para vision por computadora.",
-      "Demos de laboratorio en 3D.",
-      "Comparativa de calidad entre datasets.",
-    ],
-    how_to: [
-      "Preparar un set de imagenes o video.",
-      "Cargar la ruta de entrada en el modulo.",
-      "Configurar resolucion y parametros de entrenamiento.",
-      "Ejecutar el proceso y monitorear el avance.",
-      "Abrir el visor para navegar la escena.",
-      "Exportar resultados para uso externo si aplica.",
-    ],
-  },
   ml_sharp: {
     title: "ML-SHARP",
     summary:
-      "Reconstruccion rapida con gaussian splats enfocada en velocidad y previsualizacion.",
+      "Reconstruccion rapida con gaussian splats, escenas y visor web integrado.",
     what_is:
-      "Implementacion optimizada para pruebas rapidas con presets de calidad y rendimiento.",
+      "Implementacion optimizada para pruebas rapidas con escenas 3D y visor web local.",
     purpose:
-      "Obtener resultados tempranos para evaluar captura antes de un pipeline completo.",
+      "Obtener resultados tempranos y revisar escenas en un visor web sin salir del estudio.",
     use_cases: [
       "Validar la calidad de un set de imagenes.",
       "Comparar configuraciones de render.",
       "Prototipar escenas 3D en poco tiempo.",
       "Demostraciones en clase con tiempos reducidos.",
+      "Abrir escenas locales en el visor para revision rapida.",
     ],
     how_to: [
       "Instalar dependencias del backend.",
       "Seleccionar carpeta de entrada y salida.",
       "Elegir preset de calidad (rapido/medio/alto).",
       "Configurar dispositivo (CPU/GPU).",
-      "Ejecutar y abrir la previsualizacion.",
+      "Ejecutar el proceso y abrir la previsualizacion.",
+      "Usar la biblioteca de escenas para abrir el visor o la carpeta.",
     ],
   },
   model_3d: {

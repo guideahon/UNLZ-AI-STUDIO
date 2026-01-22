@@ -33,7 +33,6 @@ except Exception as e:
     print(f"Warning: Could not set AppUserModelID: {e}")
 
 # Import modules
-from modules.gaussian import GaussianModule
 from modules.llm_frontend import LLMFrontendModule
 from modules.inclu_ia import IncluIAModule
 from modules.monitor import MonitorModule
@@ -239,12 +238,6 @@ class StudioGUI(ctk.CTk):
                 "title_key": "mod_monitor_title", 
                 "desc_key": "mod_monitor_desc",
                 "icon": "Sys"
-            },
-            "gaussian": {
-                "class": GaussianModule,
-                "title_key": "mod_gaussian_title", 
-                "desc_key": "mod_gaussian_desc",
-                "icon": "GS"
             },
             "ml_sharp": {
                 "class": MLSharpModule,

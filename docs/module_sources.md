@@ -9,7 +9,6 @@ Fuentes:
 
 Modulos:
 - monitor -> Endpoints de IA (source: `system/assets/languages.json`, key `mod_monitor_title`)
-- gaussian -> Gaussian Splatting (source: `system/assets/languages.json`, key `mod_gaussian_title`)
 - ml_sharp -> ML-SHARP (source: `system/assets/languages.json`, key `mod_mlsharp_title`)
 - model_3d -> Generacion de modelo 3D (source: `system/assets/languages.json`, key `mod_model3d_title`)
 - llm_frontend -> Chat AI (source: `system/assets/languages.json`, key `mod_llm_title`)

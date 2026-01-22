@@ -54,22 +54,23 @@ p {
   background-position: center;
   background-size: 80px 80px;
   z-index: 0;
+  pointer-events: none;
 }
 
 .orb-left {
-  width: 740px;
-  height: 740px;
+  width: min(72vw, 740px);
+  height: min(72vw, 740px);
   opacity: 0.08;
   background-size: 90px 90px;
-  left: -320px;
+  left: clamp(24px, 4vw, 120px);
 }
 
 .orb-right {
-  width: 820px;
-  height: 820px;
+  width: min(80vw, 820px);
+  height: min(80vw, 820px);
   opacity: 0.12;
   background-size: 72px 72px;
-  right: -340px;
+  right: clamp(24px, 4vw, 120px);
 }
 
 .bg-grid {

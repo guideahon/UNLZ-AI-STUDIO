@@ -146,17 +146,12 @@ Los módulos se instalan desde la GUI o la Web UI. Código en `system/modules/`.
 - Funcionamiento: consulta el estado vía Web Bridge y dispara acciones `/services/*`.
 - Uso en la app: Web UI > Monitor (iniciar/detener, instalar/desinstalar, seleccionar modelo).
 
-### Gaussian Splatting (SharpSplat)
-- Autor original: Apple (Sharp/SharpSplat, modelo publicado por Apple).
-- Descripción: genera splats gaussianos 3D desde imágenes o video.
-- Funcionamiento: usa el CLI `sharp` y el modelo `sharp_2572gikvuh.pt`.
-- Uso en la app: elegir input, generar splat y abrir salida/visor.
-
 ### ML-SHARP
 - Autor original: Apple (`https://github.com/apple/ml-sharp`).
 - Descripción: síntesis monocular rápida con splats gaussianos.
-- Funcionamiento: ejecuta `sharp predict` con selección de dispositivo y render opcional.
-- Uso en la app: instalar dependencias, elegir input/salida, correr inferencia.
+- Funcionamiento: ejecuta `sharp predict` con selección de dispositivo y render opcional, y genera escenas 3D con visor web.
+- Uso en la app: instalar dependencias, elegir input/salida, correr inferencia, gestionar escenas (library) y abrir visor.
+- Extra (SharpSplat): descarga automática del modelo `sharp_2572gikvuh.pt` y setup del viewer (`gaussians/index.html`).
 
 ### LLM Frontend (Chat & Manager)
 - Autor original: UNLZ AI Studio.

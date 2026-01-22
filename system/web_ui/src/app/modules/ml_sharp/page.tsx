@@ -10,6 +10,14 @@ type MLSharpState = {
   deps_installed: boolean;
   output_dir: string;
   running: boolean;
+  scenes: Scene[];
+  last_output: string | null;
+};
+
+type Scene = {
+  name: string;
+  path: string;
+  has_viewer: boolean;
 };
 
 export default function MLSharpPage() {
@@ -65,6 +73,23 @@ export default function MLSharpPage() {
       method: "POST",
       body: JSON.stringify({ path: outputDir || state?.output_dir }),
     });
+  };
+
+  const openScene = async (scene: Scene) => {
+    await fetchJson("/modules/ml_sharp/open_scene", {
+      method: "POST",
+      body: JSON.stringify({ path: scene.path }),
+    });
+  };
+
+  const viewScene = async (scene: Scene) => {
+    const data = await fetchJson<{ url: string }>("/modules/ml_sharp/view_scene", {
+      method: "POST",
+      body: JSON.stringify({ path: scene.path }),
+    });
+    if (data.url) {
+      window.open(data.url, "_blank");
+    }
   };
 
   return (
@@ -138,6 +163,37 @@ export default function MLSharpPage() {
               {translations.mlsharp_btn_open_output || "Open output"}
             </button>
           </div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <h2>{translations.mlsharp_scene_library || "Scene Library"}</h2>
+          <span className="pill">{state?.scenes?.length || 0} scenes</span>
+        </div>
+        <div className="panel-body">
+          {!state?.scenes?.length ? (
+            <div className="empty">No scenes found.</div>
+          ) : (
+            <div className="list">
+              {state.scenes.map((scene) => (
+                <div key={scene.path} className="list-row">
+                  <div>
+                    <div className="list-title">{scene.name}</div>
+                    <div className="list-meta">{scene.has_viewer ? "Viewer ready" : "Viewer pending"}</div>
+                  </div>
+                  <div className="list-actions">
+                    <button className="ghost" onClick={() => openScene(scene)} disabled={!scene.has_viewer}>
+                      Open folder
+                    </button>
+                    <button className="primary" onClick={() => viewScene(scene)} disabled={!scene.has_viewer}>
+                      View
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

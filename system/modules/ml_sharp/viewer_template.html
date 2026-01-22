@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SharpSplat Viewer</title>
+    <script type="module" src="https://unpkg.com/@splat/viewer@1.0.0/dist/viewer.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        #canvas { width: 100vw; height: 100vh; display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: sans-serif;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h2>SharpSplat Viewer</h2>
+        <p>Loading scene.ply...</p>
+        <p>Controls: Left Click to Rotate, Right Click to Pan, Scroll to Zoom</p>
+    </div>
+    
+    <!-- Using a generic viewer implementation. 
+         If this specific package doesn't exist, we will use a more robust one below. 
+         Actually, let's use a known working implementation script directly. -->
+    
+    <script type="module">
+        import * as SPLAT from 'https://cdn.jsdelivr.net/npm/gsplat@latest/dist/gsplat.module.js';
+
+        const canvas = document.createElement('canvas');
+        document.body.appendChild(canvas);
+
+        const renderer = new SPLAT.WebGLRenderer(canvas);
+        const scene = new SPLAT.Scene();
+        const camera = new SPLAT.Camera();
+        const controls = new SPLAT.OrbitControls(camera, canvas);
+
+        async function main() {
+            // Load the .ply file
+            await SPLAT.Loader.LoadAsync('scene.ply', scene, (progress) => {
+                document.querySelector('#info p').textContent = `Loading: ${Math.round(progress * 100)}%`;
+            });
+            
+            document.querySelector('#info p').textContent = 'Scene Loaded';
+
+            // Handle resize
+            function onResize() {
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+            }
+            window.addEventListener('resize', onResize);
+            onResize();
+
+            // Animation loop
+            function frame() {
+                controls.update();
+                renderer.render(scene, camera);
+                requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+        }
+
+        main();
+    </script>
+</body>
+</html>

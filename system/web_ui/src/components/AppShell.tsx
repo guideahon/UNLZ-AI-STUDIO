@@ -11,6 +11,10 @@ const NAV_ITEMS = [
   { href: "/settings", key: "nav_settings", fallback: "Ajustes" },
 ];
 
+const ORB_SPACING = 520;
+const ORB_TOP_OFFSET = 40;
+const ORB_BOTTOM_PADDING = 120;
+
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { translations, error, refresh, favorites, modules } = useApp();
@@ -19,16 +23,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     .filter(Boolean);
   const containerRef = useRef<HTMLElement | null>(null);
   const [orbCount, setOrbCount] = useState(2);
+  const [orbSpacing, setOrbSpacing] = useState(ORB_SPACING);
 
   useEffect(() => {
     const updateOrbs = () => {
-      const height = document.documentElement.scrollHeight;
-      const orbSpacing = 520;
-      const topOffset = -300;
+      const height = Math.max(
+        document.documentElement.scrollHeight,
+        document.documentElement.clientHeight
+      );
+      const baseSpacing = ORB_SPACING;
+      const topOffset = ORB_TOP_OFFSET;
       const maxOrbSize = 820;
-      const maxTop = Math.max(topOffset, height - maxOrbSize);
-      const count = Math.max(2, Math.floor((maxTop - topOffset) / orbSpacing) + 1);
+      const maxTop = Math.max(topOffset, height - maxOrbSize - ORB_BOTTOM_PADDING);
+      const available = Math.max(0, maxTop - topOffset);
+      const count = Math.max(2, Math.floor(available / baseSpacing) + 1);
+      const spacing = count > 1 ? Math.min(baseSpacing, available / (count - 1)) : baseSpacing;
       setOrbCount(count);
+      setOrbSpacing(spacing);
     };
 
     updateOrbs();
@@ -52,7 +63,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div
           key={`orb-${index}`}
           className={`bg-orb ${index % 2 === 0 ? "orb-left" : "orb-right"}`}
-          style={{ top: `${index * 520 - 300}px` }}
+          style={{ top: `${index * orbSpacing + ORB_TOP_OFFSET}px` }}
         />
       ))}
       <div className="bg-grid" />

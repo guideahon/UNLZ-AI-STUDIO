@@ -4,6 +4,8 @@ import sys
 import threading
 import subprocess
 import shutil
+import socket
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -37,10 +39,16 @@ class MLSharpView(ctk.CTkFrame):
         self.app_root = Path(__file__).resolve().parents[3]
         self.backend_dir = self.app_root / "system" / "ai-backends" / "ml-sharp"
         self.default_output_dir = self.app_root / "system" / "ml-sharp-out"
+        self.viewer_template = self.app_root / "system" / "modules" / "ml_sharp" / "viewer_template.html"
         self.deps_marker = self.backend_dir / ".deps_installed"
+        self.current_output_dir = None
+        self.scene_buttons = []
 
         self.build_ui()
         self.refresh_buttons()
+        self.default_output_dir.mkdir(parents=True, exist_ok=True)
+        self.after(100, self.start_model_check)
+        self.after(500, self.load_scenes)
 
     def build_ui(self):
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -117,6 +125,25 @@ class MLSharpView(ctk.CTkFrame):
         self.btn_open_output = ctk.CTkButton(controls, text=self.tr("mlsharp_btn_open_output"), command=self.open_output_folder)
         self.btn_open_output.pack(side="left", padx=5)
 
+        scene_header = ctk.CTkFrame(self, fg_color="transparent")
+        scene_header.pack(fill="x", padx=10, pady=(10, 0))
+
+        ctk.CTkLabel(scene_header, text=self.tr("mlsharp_scene_library"), font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
+        self.btn_refresh_scenes = ctk.CTkButton(scene_header, text=self.tr("mlsharp_btn_refresh_scenes"), command=self.load_scenes, width=120)
+        self.btn_refresh_scenes.pack(side="right")
+
+        self.scene_list_frame = ctk.CTkScrollableFrame(self, label_text=self.tr("mlsharp_scene_list_label"), height=160)
+        self.scene_list_frame.pack(fill="x", padx=10, pady=(5, 5))
+
+        scene_actions = ctk.CTkFrame(self, fg_color="transparent")
+        scene_actions.pack(fill="x", padx=10, pady=(0, 5))
+
+        self.btn_open_scene = ctk.CTkButton(scene_actions, text=self.tr("mlsharp_btn_open_scene"), command=self.open_scene_folder, state="disabled")
+        self.btn_open_scene.pack(side="left", padx=5)
+
+        self.btn_view_scene = ctk.CTkButton(scene_actions, text=self.tr("mlsharp_btn_view_scene"), command=self.view_scene, state="disabled")
+        self.btn_view_scene.pack(side="left", padx=5)
+
         log_frame = ctk.CTkFrame(self)
         log_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
 
@@ -127,7 +154,7 @@ class MLSharpView(ctk.CTkFrame):
 
     def refresh_buttons(self):
         disabled = "disabled" if self._busy else "normal"
-        for btn in (self.btn_deps, self.btn_open, self.btn_repo, self.btn_run, self.btn_open_output):
+        for btn in (self.btn_deps, self.btn_open, self.btn_repo, self.btn_run, self.btn_open_output, self.btn_refresh_scenes):
             btn.configure(state=disabled)
 
         if self._busy:
@@ -141,6 +168,8 @@ class MLSharpView(ctk.CTkFrame):
                 self.btn_deps.configure(text=self.tr("mlsharp_btn_deps_installed"))
             else:
                 self.btn_deps.configure(text=self.tr("mlsharp_btn_deps"))
+
+        self._sync_scene_buttons()
 
     def set_busy(self, busy):
         self._busy = busy
@@ -186,7 +215,8 @@ class MLSharpView(ctk.CTkFrame):
         if output_dir is None or not output_dir.exists():
             messagebox.showwarning(self.tr("status_error"), self.tr("mlsharp_msg_output_missing"))
             return
-        os.startfile(str(output_dir))
+        target = output_dir / "gaussians"
+        os.startfile(str(target if target.exists() else output_dir))
 
     def install_deps(self):
         if not self.backend_dir.exists():
@@ -229,11 +259,12 @@ class MLSharpView(ctk.CTkFrame):
             messagebox.showwarning(self.tr("status_error"), self.tr("mlsharp_msg_backend_missing"))
             return
 
-        output_dir = self.get_output_dir()
+        output_dir = self.resolve_output_dir()
         if output_dir is None:
             messagebox.showwarning(self.tr("status_error"), self.tr("mlsharp_msg_output_missing"))
             return
         output_dir.mkdir(parents=True, exist_ok=True)
+        self.current_output_dir = output_dir
 
         sharp_cmd = self.find_sharp_cmd()
         if not sharp_cmd:
@@ -251,16 +282,18 @@ class MLSharpView(ctk.CTkFrame):
         self.log(self.tr("mlsharp_msg_running"))
         self.set_busy(True)
 
-        threading.Thread(target=lambda: self.run_predict_worker(cmd), daemon=True).start()
+        threading.Thread(target=lambda: self.run_predict_worker(cmd, output_dir), daemon=True).start()
 
-    def run_predict_worker(self, cmd):
+    def run_predict_worker(self, cmd, output_dir: Path):
         returncode = self.run_command(cmd)
-        self.after(0, lambda: self.on_predict_done(returncode))
+        self.after(0, lambda: self.on_predict_done(returncode, output_dir))
 
-    def on_predict_done(self, returncode):
+    def on_predict_done(self, returncode, output_dir: Path):
         self.set_busy(False)
         if returncode == 0:
             self.log(self.tr("mlsharp_msg_done"))
+            self.setup_viewer(output_dir)
+            self.load_scenes()
         else:
             self.log(self.tr("mlsharp_msg_failed").format(returncode))
 
@@ -290,6 +323,176 @@ class MLSharpView(ctk.CTkFrame):
         self.log_textbox.insert("end", message + "\n")
         self.log_textbox.see("end")
         self.log_textbox.configure(state="disabled")
+
+    def start_model_check(self):
+        threading.Thread(target=self.check_model, daemon=True).start()
+
+    def check_model(self):
+        model_url = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
+        cache_dir = Path.home() / ".cache" / "torch" / "hub" / "checkpoints"
+        model_path = cache_dir / "sharp_2572gikvuh.pt"
+
+        self.safe_log("Checking for Sharp model...")
+        if model_path.exists():
+            try:
+                file_size = model_path.stat().st_size
+                if file_size < 1024 * 1024:
+                    self.safe_log(f"Found corrupted model file ({file_size} bytes). Deleting...")
+                    model_path.unlink(missing_ok=True)
+                else:
+                    self.safe_log(f"Model found at {model_path} ({file_size / 1024 / 1024:.2f} MB).")
+                    return
+            except Exception as exc:
+                self.safe_log(f"Error checking model file: {exc}")
+
+        try:
+            import requests
+        except Exception:
+            self.safe_log("Requests not available. Install requests to download the model.")
+            return
+
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self.safe_log(f"Downloading model to {model_path}...")
+            response = requests.get(model_url, stream=True, verify=False)
+            response.raise_for_status()
+            block_size = 1024 * 1024
+            downloaded = 0
+            with open(model_path, "wb") as file:
+                for data in response.iter_content(block_size):
+                    file.write(data)
+                    downloaded += len(data)
+                    if downloaded % (5 * 1024 * 1024) == 0:
+                        self.safe_log(f"Downloaded {downloaded / 1024 / 1024:.1f} MB...")
+            self.safe_log("Model downloaded successfully.")
+        except Exception as exc:
+            self.safe_log(f"Failed to download model: {exc}")
+            try:
+                if model_path.exists():
+                    model_path.unlink()
+            except Exception:
+                pass
+
+    def load_scenes(self):
+        for btn in self.scene_buttons:
+            btn.destroy()
+        self.scene_buttons = []
+
+        output_base = self.default_output_dir
+        output_base.mkdir(parents=True, exist_ok=True)
+
+        scenes = []
+        for path in output_base.iterdir():
+            if path.is_dir() and path.name.startswith("splat_"):
+                display = path.name
+                try:
+                    ts_str = path.name.replace("splat_", "")
+                    dt = datetime.strptime(ts_str, "%Y-%m-%d_%H-%M-%S")
+                    display = dt.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    pass
+                scenes.append((display, path))
+
+        scenes.sort(key=lambda item: item[1], reverse=True)
+
+        for name, path in scenes:
+            btn = ctk.CTkButton(
+                self.scene_list_frame,
+                text=name,
+                command=lambda p=path: self.select_scene(p),
+                fg_color="transparent",
+                border_width=1,
+                text_color=("gray10", "#DCE4EE"),
+            )
+            btn.pack(fill="x", padx=5, pady=2)
+            self.scene_buttons.append(btn)
+
+        self._sync_scene_buttons()
+
+    def select_scene(self, path: Path):
+        self.current_output_dir = path
+        self.log(f"Selected scene: {path.name}")
+        self._sync_scene_buttons()
+
+    def _scene_view_ready(self, output_dir: Path) -> bool:
+        gaussians_dir = output_dir / "gaussians"
+        return (gaussians_dir / "index.html").exists() or (gaussians_dir / "scene.ply").exists()
+
+    def _sync_scene_buttons(self):
+        ready = self.current_output_dir is not None and self._scene_view_ready(Path(self.current_output_dir))
+        state = "normal" if ready and not self._busy else "disabled"
+        self.btn_open_scene.configure(state=state)
+        self.btn_view_scene.configure(state=state)
+
+    def open_scene_folder(self):
+        if not self.current_output_dir:
+            return
+        target = Path(self.current_output_dir) / "gaussians"
+        os.startfile(str(target if target.exists() else self.current_output_dir))
+
+    def view_scene(self):
+        if not self.current_output_dir:
+            return
+        url = self._start_viewer_server(Path(self.current_output_dir))
+        self.log(f"Opening viewer at {url}")
+        import webbrowser
+        webbrowser.open(url)
+
+    def setup_viewer(self, output_dir: Path):
+        try:
+            gaussians_dir = output_dir / "gaussians"
+            gaussians_dir.mkdir(parents=True, exist_ok=True)
+            viewer_dst = gaussians_dir / "index.html"
+            scene_dst = gaussians_dir / "scene.ply"
+
+            ply_files = [f for f in output_dir.iterdir() if f.suffix == ".ply"]
+            if not ply_files:
+                self.log("Warning: No .ply file found in output.")
+                return
+
+            src_ply = ply_files[0]
+            shutil.move(str(src_ply), str(scene_dst))
+            self.log(f"Moved {src_ply.name} to {scene_dst}")
+
+            if self.viewer_template.exists():
+                shutil.copy(str(self.viewer_template), str(viewer_dst))
+                self.log(f"Viewer created at: {viewer_dst}")
+            else:
+                self.log(f"Error: viewer_template.html not found at {self.viewer_template}")
+        except Exception as exc:
+            self.log(f"Error setting up viewer: {exc}")
+        finally:
+            self.current_output_dir = output_dir
+            self._sync_scene_buttons()
+
+    def _start_viewer_server(self, directory: Path) -> str:
+        port = 8000
+        while port < 8100:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    port += 1
+                    continue
+            except Exception:
+                break
+        python_exe = sys.executable.replace("pythonw.exe", "python.exe")
+        cmd = [python_exe, "-m", "http.server", str(port), "--directory", str(directory)]
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+        return f"http://localhost:{port}/gaussians/index.html"
+
+    def resolve_output_dir(self):
+        output_path = self.output_entry.get().strip()
+        if output_path:
+            return Path(output_path)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_dir = self.default_output_dir / f"splat_{timestamp}"
+        self.output_entry.delete(0, "end")
+        self.output_entry.insert(0, str(output_dir))
+        return output_dir
 
     def get_output_dir(self):
         output_path = self.output_entry.get().strip()
